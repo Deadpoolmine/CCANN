@@ -112,7 +112,7 @@ CCANN inherits OdinANN's PM-ANN design — a PM-specific memory index with full 
 ### Memory Index Build
 
 ```
-cd tests/tools
+cd scripts/tools
 # build memory index for CCANN with SIFT-family datasets
 # ANN_NAME DATASET_FAMILY BASE_FILE INDEX_PREFIX
 bash ./build_mem_index.sh CCANN SIFT /path/to/SIFT-SMALL/data/siftsmall_base.bin /path/to/SIFT-SMALL/index/siftsmall
@@ -420,52 +420,41 @@ build/tests/overall_performance uint8 /mnt/nvme/data/bigann/bigann_200M.bbin 128
 
 ### Notes
 
-* The index is **not crash-consistent** after updates currently, journaling could be adopted for it.
+* CCANN's **Soft Insert** ensures per-vector crash consistency via graph-aware write ordering. After a crash, recovery replays the minimal journal to restore the last committed epoch (see [Soft Insert](#-core-innovation-soft-insert) above).
 
 * To save a **consistent index snapshot** after updates, use `final_merge` similar to `test_insert_search`.
 
-* For better performance, please select the `search_mode` to `2` (CCANN) in `test_insert_search`, and set the `search_beam_width` to 32.
-The in-memory index could also be used (but it is immutable during updates).
+* For better performance, select `search_mode` to `2` (CCANN) in `test_insert_search`, and set `search_beam_width` to 32. The in-memory index can also be used (it is immutable during updates).
 
 
-## Reproduce Results in Our Papers
+## Reproduce Results
 
-The scripts we use for evaluation are placed in the `scripts/` directory. For details, please refer to:
+The evaluation scripts are placed in the `scripts/` directory:
 
-* [CCANN](./README-CCANN.md) for search-only scripts in `tests-ccann`.
-* [OdinANN](./README-OdinANN.md) for search-update scripts in `tests-odinann`.
+| Directory | Description |
+|-----------|-------------|
+| `scripts/FIG-Search/` | Search throughput and latency benchmarks |
+| `scripts/FIG-Insert/` | Insert performance and breakdown tests |
+| `scripts/FIG-Overall/` | End-to-end overall performance |
+| `scripts/FIG-Breakdown/` | Component-level performance breakdown |
+| `scripts/tools/` | Build, setup, and utility scripts |
 
 
 ## Cite Our Paper
 
-If you use this repository in your research, please cite our papers:
-```
-@inproceedings {fast26odinann,
-  author = {Hao Guo and Youyou Lu},
-  title = {OdinANN: Direct Insert for Consistently Stable Performance in Billion-Scale Graph-Based Vector Search},
-  booktitle = {24th USENIX Conference on File and Storage Technologies (FAST 26)},
-  year = {2026},
-  address = {Santa Clara, CA},
-  publisher = {USENIX Association}
-}
+If you use this repository in your research, please cite our paper:
 
-@inproceedings {osdi25ccann,
+```
+@inproceedings {ccann,
   author = {Hao Guo and Youyou Lu},
-  title = {Achieving Low-Latency Graph-Based Vector Search via Aligning Best-First Search Algorithm with SSD},
-  booktitle = {19th USENIX Symposium on Operating Systems Design and Implementation (OSDI 25)},
-  year = {2025},
-  address = {Boston, MA},
-  pages = {171--186},
-  publisher = {USENIX Association}
+  title = {CCANN: Crash-Consistent Approximate Nearest Neighbor Search on Persistent Memory},
+  booktitle = {},
+  year = {},
+  publisher = {}
 }
 ```
 
-## Acknowledgments
-
-CCANN is built upon and gratefully acknowledges the following open-source projects:
-
-- **[OdinANN](https://github.com/thustorage/PipeANN)** (FAST'26): The direct insert mechanism and dynamic index framework form the foundation of CCANN's update path. We extend OdinANN's insert logic with crash-consistent Soft Insert.
-- **[PipeANN](https://github.com/thustorage/PipeANN)** (OSDI'25): The pipelined SSD I/O search engine, coroutine-based search, and efficient SSD index layout provide CCANN's billion-scale search capability.
-- **[DiskANN / FreshDiskANN](https://github.com/microsoft/DiskANN)**: The original graph-based disk index design that inspired both PipeANN and OdinANN.
-
-**Core CCANN Contribution — Soft Insert:** A lightweight crash-consistency protocol for PM-resident ANN indices. See the [Soft Insert](#-core-innovation-soft-insert) section above for details.
+CCANN builds upon and gratefully acknowledges:
+- **[OdinANN](https://github.com/thustorage/PipeANN)** (FAST'26) for the direct insert and dynamic index framework.
+- **[PipeANN](https://github.com/thustorage/PipeANN)** (OSDI'25) for the pipelined SSD I/O search engine.
+- **[DiskANN / FreshDiskANN](https://github.com/microsoft/DiskANN)** for the original graph-based disk index design.
