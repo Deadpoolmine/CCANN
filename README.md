@@ -1,84 +1,84 @@
 # CCANN: Crash-Consistent Approximate Nearest Neighbor Search
 
-CCANN 是首个面向持久内存（PM）的**崩溃一致性**图基向量近似最近邻搜索（ANNS）索引，基于 [OdinANN (FAST'26)](https://www.usenix.org/conference/fast26/) 和 [PipeANN (OSDI'25)](https://www.usenix.org/conference/osdi25/) 构建。CCANN 的核心创新是 **Soft Insert** — 受文件系统 soft update 启发的逐向量崩溃一致性持久化机制，在毫秒级内将每个向量安全持久化到 PM，同时提供高性能的向量插入和搜索。
+CCANN is the first **crash-consistent** graph-based approximate nearest neighbor search (ANNS) index for persistent memory (PM), built upon [OdinANN (FAST'26)](https://www.usenix.org/conference/fast26/) and [PipeANN (OSDI'25)](https://www.usenix.org/conference/osdi25/). Its core innovation is **Soft Insert** — a per-vector crash-consistent persistence mechanism inspired by filesystem soft updates, which durably persists each vector to PM in milliseconds while delivering high-performance insertion and search.
 
 ## 🙏 Acknowledgments
 
-CCANN 深切感谢以下开源项目：
+CCANN is deeply indebted to the following open-source projects:
 
-- **[OdinANN](https://github.com/thustorage/PipeANN)** (FAST'26): Direct Insert for consistently stable performance in billion-scale graph-based vector search. 提供了基础的 **direct insert** 机制 (`src/update/direct_insert.cpp`) 和 **dynamic index** 框架 (`src/update/dynamic_index.cpp`)。
-- **[PipeANN](https://github.com/thustorage/PipeANN)** (OSDI'25): Low-latency graph-based vector search via aligning best-first search with SSD. 提供了 **pipelined SSD I/O** 搜索引擎 (`src/search/pipe_search.cpp`)、**coroutine-based search** (`src/search/coro_search.cpp`)、以及高效的 **SSD index layout** (`src/ssd_index.cpp`)。
+- **[OdinANN](https://github.com/thustorage/PipeANN)** (FAST'26): Direct Insert for consistently stable performance in billion-scale graph-based vector search. Provides the foundational **direct insert** mechanism (`src/update/direct_insert.cpp`) and **dynamic index** framework (`src/update/dynamic_index.cpp`).
+- **[PipeANN](https://github.com/thustorage/PipeANN)** (OSDI'25): Low-latency graph-based vector search via aligning best-first search with SSD. Provides the **pipelined SSD I/O** search engine (`src/search/pipe_search.cpp`), **coroutine-based search** (`src/search/coro_search.cpp`), and the efficient **SSD index layout** (`src/ssd_index.cpp`).
 
-CCANN 在这些巨人的肩膀上进一步提供了 PM 的崩溃一致性保证。
+CCANN extends their work with crash-consistency guarantees for persistent memory.
 
 ---
 
 ## 🧠 Core Innovation: Soft Insert
 
-### 动机：可靠性-性能的不可调和矛盾
+### Motivation: The Reliability–Performance Tension
 
-现有图基 ANNS 索引（包括 OdinANN）依赖**图粒度的写时复制（COW）合并**来保证崩溃一致性。这一粗粒度操作严重浪费 PM 的细粒度 I/O 能力——即使使用 PM 加速，单次合并仍需 **>400 秒**，且高频合并会扼杀插入吞吐至接近零，造成可靠性-性能的不可调和矛盾。
+Existing graph-based ANNS indices (including OdinANN) rely on **graph-granularity copy-on-write (COW) compaction** to ensure crash consistency. This coarse-grained operation severely wastes PM's fine-grained I/O capability — even with PM acceleration, a single compaction still takes **>400 seconds**, and frequent compaction throttles insertion throughput to near zero, creating an irreconcilable tension between reliability and performance.
 
-### Soft Insert 机制
+### The Soft Insert Mechanism
 
-CCANN 提出 **Soft Insert**，受文件系统 soft update 启发：推理并执行**图感知的写入顺序**，利用 PM 的 `clwb`/`sfence` 原语强制执行有序持久化，同时将插入阶段从搜索阶段解耦并延迟，使其与下一批搜索并发执行以隐藏计算开销。
+CCANN introduces **Soft Insert**, inspired by filesystem soft updates: it reasons about and enforces a **graph-aware write ordering**, leveraging PM's `clwb`/`sfence` primitives to guarantee ordered persistence. Simultaneously, the insert phase is decoupled from and deferred behind the search phase, executing concurrently with the next batch of searches to hide computation overhead.
 
-**三条写入顺序规则：**
+**Three Write-Ordering Rules:**
 
-1. **先持久化向量数据和标签，再更新位置表**：确保向量数据在对外可见前已安全落盘。
-2. **邻居更新先于邻居位置表更新**：保证边的完整性在索引结构变更前已持久化。
-3. **目标向量可见后方可使邻居指向它**：防止悬空引用，确保图的拓扑一致性。
+1. **Persist vector data and tags before updating the location table**: ensures vector data is safely flushed before becoming externally visible.
+2. **Neighbor updates precede neighbor location-table updates**: guarantees edge integrity is persisted before index structural changes.
+3. **The target vector must be visible before neighbors can point to it**: prevents dangling references and ensures graph topological consistency.
 
-### 三项增强技术
+### Three Enhancement Techniques
 
-为进一步提升 Soft Insert 的性能与可靠性，CCANN 引入了三项关键技术：
+To further boost Soft Insert's performance and reliability, CCANN introduces three key techniques:
 
-| 技术 | 描述 | 效果 |
-|------|------|------|
-| **并行节点扩展 (PNE)** | 并行化搜索阶段的邻居距离计算，引入早期退出策略减少无效计算 | 吞吐提升 28.2%–52.2% |
-| **自适应并发控制 (ACC)** | 根据 CPU 利用率动态调整并发度，防止 PM 带宽饱和 | 稳定高吞吐，避免性能崩塌 |
-| **索引快照服务 (ISS)** | 记录最新完整插入的向量 ID，将崩溃恢复范围缩小至 ∼1K 向量 | 恢复仅需数十秒（百万级）至数分钟（十亿级） |
+| Technique | Description | Impact |
+|-----------|-------------|--------|
+| **Parallel Node Expansion (PNE)** | Parallelizes neighbor distance computation during search with early-exit to reduce wasted work | 28.2%–52.2% throughput gain |
+| **Adaptive Concurrency Control (ACC)** | Dynamically adjusts concurrency based on CPU utilization to prevent PM bandwidth saturation | Stable high throughput, avoids performance collapse |
+| **Index Snapshot Service (ISS)** | Records the ID of the latest fully-inserted vector, shrinking crash recovery scope to ∼1K vectors | Recovery in tens of seconds (100M-scale) to minutes (billion-scale) |
 
-### 性能
+### Performance
 
-| 指标 | 结果 |
-|------|------|
-| **插入吞吐** (SIFT-100M, DEEP-100M) | 超越 OdinANN **99%–404%** |
-| **插入延迟** | 降低 **78.9%–82.8%**（vs. OdinANN） |
-| **搜索吞吐** | 超越 PipeANN/DiskANN **54.4%–6.61×** |
-| **逐向量持久化延迟 (P99)** | **1.7–4.8 ms**（合并方案需 7.0–8.8 分钟） |
-| **崩溃恢复** | 数十秒（百万级）至数分钟（十亿级），全图扫描重建需数天 |
-| **十亿级插入吞吐** | 保持 **∼3.58×** 优势 |
+| Metric | Result |
+|--------|--------|
+| **Insert throughput** (SIFT-100M, DEEP-100M) | Outperforms OdinANN by **99%–404%** |
+| **Insert latency** | Reduced by **78.9%–82.8%** (vs. OdinANN) |
+| **Search throughput** | Outperforms PipeANN/DiskANN by **54.4%–6.61×** |
+| **Per-vector persistence latency (P99)** | **1.7–4.8 ms** (compaction-based schemes require 7.0–8.8 minutes) |
+| **Crash recovery** | Tens of seconds (100M-scale) to minutes (billion-scale); full graph scan rebuild takes days |
+| **Billion-scale insert throughput** | Maintains **∼3.58×** advantage |
 
 ---
 
 ## Code Modifications (vs. OdinANN/PipeANN)
 
-以下文件包含 Soft Insert 核心实现及 CCANN 特有增强：
+The following files contain the core Soft Insert implementation and CCANN-specific enhancements:
 
-### 核心修改文件
+### Core Modified Files
 
 | File | Modification |
 |------|-------------|
-| `include/v2/journal.h` | **Soft Insert 持久化日志**：epoch 级日志记录，崩溃恢复回放，节点插入/删除的日志条目格式 |
-| `include/v2/page_cache.h` | PM 页缓存：崩溃一致性分配，epoch 感知的淘汰策略 |
-| `include/v2/lock_table.h` | 细粒度、epoch 感知的并发软插入锁表 |
-| `include/v2/dynamic_index.h` | 动态索引扩展：epoch 管理，崩溃恢复钩子 |
-| `src/update/direct_insert.cpp` | **Soft Insert 主逻辑**：epoch 批量插入，选择性日志，崩溃安全节点分配，PMEM 传输优化 (`PMEM_F_MEM_NODRAIN`) |
-| `src/update/dynamic_index.cpp` | Epoch 提交/回滚，恢复编排，启动时日志回放 |
-| `src/update/delete_merge.cpp` | 软删除：日志化 tombstone 标记 |
-| `src/index.cpp` | 恢复初始化，索引加载时日志验证 |
-| `src/ssd_index.cpp` | 扩展 PM 感知的崩溃一致性页管理 |
+| `include/v2/journal.h` | **Soft Insert persistent journal**: epoch-level logging, crash recovery replay, journal entry formats for node insertion/deletion |
+| `include/v2/page_cache.h` | PM page cache: crash-consistent allocation, epoch-aware eviction |
+| `include/v2/lock_table.h` | Fine-grained, epoch-aware lock table for concurrent soft inserts |
+| `include/v2/dynamic_index.h` | Dynamic index extended with epoch management and crash recovery hooks |
+| `src/update/direct_insert.cpp` | **Soft Insert main logic**: epoch-batched insertion, selective journaling, crash-safe node allocation, PMEM transfer optimizations (`PMEM_F_MEM_NODRAIN`) |
+| `src/update/dynamic_index.cpp` | Epoch commit/rollback, recovery orchestration, journal replay on startup |
+| `src/update/delete_merge.cpp` | Soft delete with journaled tombstone markers |
+| `src/index.cpp` | Recovery initialization, journal validation on index load |
+| `src/ssd_index.cpp` | Extended with PM-aware crash-consistent page management |
 
-### 配置标志
+### Configuration Flags
 
 | Flag | Description |
 |------|-------------|
-| `SOFT_INSERT` | 启用 Soft Insert 崩溃一致性协议（核心标志） |
-| `ASYNC_INSERTION` | 搜索与插入解耦，零延迟影响的一致性保证 |
-| `FINE_GRAINED_CONCURRENCY` | 乐观并发索引表，崩溃安全的原子操作 |
-| `BATCH_PRUNING` | 减少邻居修剪时的计算开销 |
-| `BATCH_SEARCH` | 批量扩展优化搜索收敛 |
+| `SOFT_INSERT` | Enable Soft Insert crash-consistency protocol (core flag) |
+| `ASYNC_INSERTION` | Decouple search from insertion for zero-latency-impact consistency |
+| `FINE_GRAINED_CONCURRENCY` | Optimistic concurrent index table with crash-safe atomic operations |
+| `BATCH_PRUNING` | Reduce computation overhead during neighbor pruning |
+| `BATCH_SEARCH` | Optimize search convergence with batched expansion |
 
 ---
 
