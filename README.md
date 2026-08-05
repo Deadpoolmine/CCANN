@@ -118,7 +118,7 @@ cd scripts/tools
 bash ./build_mem_index.sh CCANN SIFT /path/to/SIFT-SMALL/data/siftsmall_base.bin /path/to/SIFT-SMALL/index/siftsmall
 ```
 
-# CCANN (SSD-Based Billion-Scale Search)
+# CCANN
 
 CCANN inherits PipeANN's billion-scale SSD-based vector search engine — a **low-latency, billion-scale, and updatable** graph-based vector store on SSD. Features:
 
@@ -442,17 +442,7 @@ The evaluation scripts are placed in the `scripts/` directory:
 
 ## Cite Our Paper
 
-If you use this repository in your research, please cite our paper:
-
-```
-@inproceedings {ccann,
-  author = {Hao Guo and Youyou Lu},
-  title = {CCANN: Crash-Consistent Approximate Nearest Neighbor Search on Persistent Memory},
-  booktitle = {},
-  year = {},
-  publisher = {}
-}
-```
+TDB
 
 CCANN builds upon and gratefully acknowledges:
 - **[OdinANN](https://github.com/thustorage/PipeANN)** (FAST'26) for the direct insert and dynamic index framework.
