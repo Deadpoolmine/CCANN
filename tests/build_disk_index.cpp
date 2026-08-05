@@ -1,0 +1,49 @@
+#include <cstdint>
+#include "distance.h"
+#include "nbr/nbr.h"
+#include "omp.h"
+
+#include "utils/index_build_utils.h"
+#include "utils.h"
+
+int main(int argc, char **argv) {
+  if (argc < 11 || argc > 15) {
+    std::cout << "Usage: " << argv[0]
+              << " <data_type (float/int8/uint8)>  <data_file.bin>"
+                 " <index_prefix_path> <R>  <L_or_L1>  <PQ_bytes>  <M>  <T>"
+                 " <similarity metric (cosine/l2/mips) case sensitive> <nbr_type (pq/rabitq)> [L2 (0 for Vamana, >0 for PiPNN)]"
+                 " [train_query_path (for OOD build)] [R_ood] [L_ood]"
+                 " See README for more information on parameters."
+              << std::endl;
+  } else {
+    std::string dist_metric(argv[9]);
+
+    ccann::Metric m = ccann::get_metric(dist_metric);
+
+    std::string nbr_type = argv[10];
+    uint32_t L2 = argc >= 12 ? std::stoi(argv[11]) : 0;
+    std::string train_query_path = argc >= 13 ? std::string(argv[12]) : std::string();
+    uint16_t R_ood = argc >= 14 ? (uint16_t) std::stoi(argv[13]) : 0;
+    uint32_t L_ood = argc >= 15 ? (uint32_t) std::stoi(argv[14]) : 1500;
+
+    if (std::string(argv[1]) == std::string("float")) {
+      ccann::AbstractNeighbor<float> *nbr_handler = ccann::get_nbr_handler<float>(m, nbr_type);
+
+      ccann::build_disk_index<float>(argv[2], argv[3], std::stoi(argv[4]), std::stoi(argv[5]), std::stoi(argv[7]),
+                                       std::stoi(argv[8]), std::stoi(argv[6]), m, nullptr, nbr_handler, nullptr, 0, L2,
+                                       train_query_path, R_ood, L_ood);
+    } else if (std::string(argv[1]) == std::string("int8")) {
+      ccann::AbstractNeighbor<int8_t> *nbr_handler = ccann::get_nbr_handler<int8_t>(m, nbr_type);
+      ccann::build_disk_index<int8_t>(argv[2], argv[3], std::stoi(argv[4]), std::stoi(argv[5]), std::stoi(argv[7]),
+                                        std::stoi(argv[8]), std::stoi(argv[6]), m, nullptr, nbr_handler, nullptr, 0, L2,
+                                        train_query_path, R_ood, L_ood);
+    } else if (std::string(argv[1]) == std::string("uint8")) {
+      ccann::AbstractNeighbor<uint8_t> *nbr_handler = ccann::get_nbr_handler<uint8_t>(m, nbr_type);
+      ccann::build_disk_index<uint8_t>(argv[2], argv[3], std::stoi(argv[4]), std::stoi(argv[5]), std::stoi(argv[7]),
+                                         std::stoi(argv[8]), std::stoi(argv[6]), m, nullptr, nbr_handler, nullptr, 0,
+                                         L2, train_query_path, R_ood, L_ood);
+    } else {
+      LOG(ERROR) << "Error. wrong file type";
+    }
+  }
+}

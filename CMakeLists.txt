@@ -97,37 +97,64 @@ link_libraries(
 # check for AVX512 and AVX2, add the corresponding definitions.
 # First, for the compiler.
 include(CheckCXXCompilerFlag)
+# check for AVX512 and AVX2, add the corresponding definitions.
+# First, for the compiler.
+include(CheckCXXCompilerFlag)
 check_cxx_compiler_flag("-mavx512f" COMPILER_SUPPORTS_AVX512F)
 check_cxx_compiler_flag("-mavx2" COMPILER_SUPPORTS_AVX2)
 
 # Then, for the runtime.
+# test_x86_avx.cpp returns a bitmask: bit0=AVX2, bit1=AVX512F, bit2=AVX512VPOPCNTDQ
 set(CPU_SUPPORTS_AVX512 FALSE)
 set(CPU_SUPPORTS_AVX2 FALSE)
-try_run(
-	RUN_RESULT
-	COMPILE_RESULT
-	"${CMAKE_BINARY_DIR}"
-	SOURCES "${PROJECT_SOURCE_DIR}/tests/test_cpu.cpp"
-	COMPILE_OUTPUT_VARIABLE COMPILE_OUT
-	RUN_OUTPUT_VARIABLE RUN_OUT
-)
-
-if(COMPILE_RESULT AND RUN_RESULT EQUAL 3) # AVX512 + AVX2
-	set(CPU_SUPPORTS_AVX512 TRUE)
-	message(STATUS "CPU supports AVX512")
-elseif(COMPILE_RESULT AND RUN_RESULT EQUAL 1) # AVX2
-	set(CPU_SUPPORTS_AVX2 TRUE)
-	message(STATUS "CPU supports AVX2")
+set(CPU_SUPPORTS_AVX512_VPOPCNTDQ FALSE)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|i.86)$")
+	try_run(
+		RUN_RESULT
+		COMPILE_RESULT
+		"${CMAKE_BINARY_DIR}"
+		SOURCES "${PROJECT_SOURCE_DIR}/tests/test_x86_avx.cpp"
+		COMPILE_OUTPUT_VARIABLE COMPILE_OUT
+		RUN_OUTPUT_VARIABLE RUN_OUT
+	)
 else()
-	message(STATUS "CPU does not support AVX512 or detection failed")
+	set(RUN_RESULT 0)
+	set(COMPILE_RESULT FALSE)
 endif()
 
-if(COMPILER_SUPPORTS_AVX512F AND CPU_SUPPORTS_AVX512)
-    message(STATUS "Compiler and CPU supports -mavx512f. Enabling AVX512F.")
+# RUN_RESULT is a bitmask: bit0=AVX2, bit1=AVX512F, bit2=AVX512VPOPCNTDQ
+if(COMPILE_RESULT)
+	math(EXPR HAS_AVX2 "${RUN_RESULT} & 1")
+	math(EXPR HAS_AVX512F "${RUN_RESULT} & 2")
+	math(EXPR HAS_VPOPCNTDQ "${RUN_RESULT} & 4")
+	if(HAS_AVX2)
+		set(CPU_SUPPORTS_AVX2 TRUE)
+		message(STATUS "CPU supports AVX2")
+	endif()
+	if(HAS_AVX512F)
+		set(CPU_SUPPORTS_AVX512 TRUE)
+		message(STATUS "CPU supports AVX512F")
+	endif()
+	if(HAS_VPOPCNTDQ)
+		set(CPU_SUPPORTS_AVX512_VPOPCNTDQ TRUE)
+		message(STATUS "CPU supports AVX512VPOPCNTDQ")
+	endif()
+else()
+	message(STATUS "CPU feature detection failed")
+endif()
+
+if(COMPILER_SUPPORTS_AVX512F AND CPU_SUPPORTS_AVX512_VPOPCNTDQ)
+	message(STATUS "Enabling AVX512 + VPOPCNTDQ.")
+	add_definitions(-DUSE_AVX512)
+	add_definitions(-DUSE_AVX512_VPOPCNTDQ)
+elseif(COMPILER_SUPPORTS_AVX512F AND CPU_SUPPORTS_AVX512)
+    message(STATUS "Compiler and CPU support -mavx512f. Enabling AVX512.")
 	add_definitions(-DUSE_AVX512)
 elseif(COMPILER_SUPPORTS_AVX2 AND CPU_SUPPORTS_AVX2)
-	message(STATUS "Compiler and CPU supports -mavx2. Enabling AVX2.")
+	message(STATUS "Compiler and CPU support -mavx2. Enabling AVX2.")
 	add_definitions(-DUSE_AVX2)
+else()
+    message(STATUS "Compiler or CPU do not support -mavx512f and -mavx2.")
 else()
     message(STATUS "Compiler or CPU do not support -mavx512f and -mavx2.")
 endif()
