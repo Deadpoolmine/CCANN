@@ -1,0 +1,80 @@
+# Verify the stack usage is below the assumed limit
+name: Stack usage
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+env:
+  CALL_STACKS_TOOLS_PATH: pmdk/utils/call_stacks_analysis
+
+permissions: {}
+
+jobs:
+  stack-usage:
+    name: Stack usage
+    env:
+      FILTERED_PREFIX: call_stacks_filtered
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the git repo
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          path: pmdk
+
+      - name: Install PMDK's dependencies
+        run: |
+          sudo apt-get install libdaxctl-dev libndctl-dev
+
+      - name: Install cflow
+        working-directory: ${{ env.CALL_STACKS_TOOLS_PATH }}
+        run: |
+          ./install_cflow.sh
+
+      - name: Build PMDK
+        env:
+          # just to speed up the job
+          BUILD_EXAMPLES: n
+          BUILD_BENCHMARKS: n
+        run: |
+          cd pmdk/src
+          make -j$(nproc)
+
+      - name: Make call stacks
+        working-directory: ${{ env.CALL_STACKS_TOOLS_PATH }}
+        run: |
+          ./run_call_stacks_analysis.sh
+
+      - name: List per-function stack usage for all call stacks of interest
+        working-directory: ${{ env.CALL_STACKS_TOOLS_PATH }}
+        env:
+          TEMP: call_stack.json
+        run: |
+          touch ${{ env.FILTERED_PREFIX }}.txt
+          jq -c '.[]' ${{ env.FILTERED_PREFIX }}.json | while read i; do
+              echo $i > ${{ env.TEMP }}
+              {
+                ./list_stack_usage.py -c ${{ env. TEMP }};
+                echo $i | jq '.size';
+                echo;
+              } >> ${{ env.FILTERED_PREFIX }}.txt
+          done
+          rm -f ${{ env.TEMP }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: call_stacks_data
+          path: |
+            ${{ env.CALL_STACKS_TOOLS_PATH }}/stack_usage.txt
+            ${{ env.CALL_STACKS_TOOLS_PATH }}/${{ env.FILTERED_PREFIX }}.*
+
+      - name: Make sure no call stack falls above the limit
+        working-directory: ${{ env.CALL_STACKS_TOOLS_PATH }}
+        run: |
+          if [ $(wc -l < ${{ env.FILTERED_PREFIX }}.txt) -gt 0 ]; then
+            cat ${{ env.FILTERED_PREFIX }}.json
+            echo
+            cat ${{ env.FILTERED_PREFIX }}.txt
+            exit 1
+          fi
