@@ -1,49 +1,43 @@
-#include <cstdint>
-#include "distance.h"
-#include "nbr/nbr.h"
 #include "omp.h"
 
-#include "utils/index_build_utils.h"
+#include "aux_utils.h"
+#include "index.h"
+#include "math_utils.h"
+#include "partition_and_pq.h"
 #include "utils.h"
 
+template<typename T>
+bool build_index(const char *dataFilePath, const char *indexFilePath, const char *indexBuildParameters,
+                 pipeann::Metric m, bool singleFile) {
+  return pipeann::build_disk_index<T>(dataFilePath, indexFilePath, indexBuildParameters, m, singleFile);
+}
+
 int main(int argc, char **argv) {
-  if (argc < 11 || argc > 15) {
+  if (argc != 11) {
     std::cout << "Usage: " << argv[0]
               << " <data_type (float/int8/uint8)>  <data_file.bin>"
-                 " <index_prefix_path> <R>  <L_or_L1>  <PQ_bytes>  <M>  <T>"
-                 " <similarity metric (cosine/l2/mips) case sensitive> <nbr_type (pq/rabitq)> [L2 (0 for Vamana, >0 for PiPNN)]"
-                 " [train_query_path (for OOD build)] [R_ood] [L_ood]"
+                 " <index_prefix_path> <R>  <L>  <B>  <M>  <T>"
+                 " <similarity metric (cosine/l2) case sensitive>."
+                 " <single_file_index (0/1)>"
                  " See README for more information on parameters."
               << std::endl;
   } else {
+    std::string params = std::string(argv[4]) + " " + std::string(argv[5]) + " " + std::string(argv[6]) + " " +
+                         std::string(argv[7]) + " " + std::string(argv[8]);
     std::string dist_metric(argv[9]);
+    bool single_file_index = std::atoi(argv[10]) != 0;
 
-    ccann::Metric m = ccann::get_metric(dist_metric);
-
-    std::string nbr_type = argv[10];
-    uint32_t L2 = argc >= 12 ? std::stoi(argv[11]) : 0;
-    std::string train_query_path = argc >= 13 ? std::string(argv[12]) : std::string();
-    uint16_t R_ood = argc >= 14 ? (uint16_t) std::stoi(argv[13]) : 0;
-    uint32_t L_ood = argc >= 15 ? (uint32_t) std::stoi(argv[14]) : 1500;
-
-    if (std::string(argv[1]) == std::string("float")) {
-      ccann::AbstractNeighbor<float> *nbr_handler = ccann::get_nbr_handler<float>(m, nbr_type);
-
-      ccann::build_disk_index<float>(argv[2], argv[3], std::stoi(argv[4]), std::stoi(argv[5]), std::stoi(argv[7]),
-                                       std::stoi(argv[8]), std::stoi(argv[6]), m, nullptr, nbr_handler, nullptr, 0, L2,
-                                       train_query_path, R_ood, L_ood);
-    } else if (std::string(argv[1]) == std::string("int8")) {
-      ccann::AbstractNeighbor<int8_t> *nbr_handler = ccann::get_nbr_handler<int8_t>(m, nbr_type);
-      ccann::build_disk_index<int8_t>(argv[2], argv[3], std::stoi(argv[4]), std::stoi(argv[5]), std::stoi(argv[7]),
-                                        std::stoi(argv[8]), std::stoi(argv[6]), m, nullptr, nbr_handler, nullptr, 0, L2,
-                                        train_query_path, R_ood, L_ood);
-    } else if (std::string(argv[1]) == std::string("uint8")) {
-      ccann::AbstractNeighbor<uint8_t> *nbr_handler = ccann::get_nbr_handler<uint8_t>(m, nbr_type);
-      ccann::build_disk_index<uint8_t>(argv[2], argv[3], std::stoi(argv[4]), std::stoi(argv[5]), std::stoi(argv[7]),
-                                         std::stoi(argv[8]), std::stoi(argv[6]), m, nullptr, nbr_handler, nullptr, 0,
-                                         L2, train_query_path, R_ood, L_ood);
-    } else {
-      LOG(ERROR) << "Error. wrong file type";
+    pipeann::Metric m = dist_metric == "cosine" ? pipeann::Metric::COSINE : pipeann::Metric::L2;
+    if (dist_metric != "l2" && m == pipeann::Metric::L2) {
+      std::cout << "Metric " << dist_metric << " is not supported. Using L2" << std::endl;
     }
+    if (std::string(argv[1]) == std::string("float"))
+      build_index<float>(argv[2], argv[3], params.c_str(), m, single_file_index);
+    else if (std::string(argv[1]) == std::string("int8"))
+      build_index<int8_t>(argv[2], argv[3], params.c_str(), m, single_file_index);
+    else if (std::string(argv[1]) == std::string("uint8"))
+      build_index<uint8_t>(argv[2], argv[3], params.c_str(), m, single_file_index);
+    else
+      std::cout << "Error. wrong file type" << std::endl;
   }
 }

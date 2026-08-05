@@ -311,10 +311,10 @@ void update(const std::string &data_bin, const unsigned L_disk, int vecs_per_ste
         LOG(INFO) << "Number of vectors: " << sync_index._disk_index->cur_id;
         double dummy;
         // for (uint32_t j = 0; j < Lsearch.size(); ++j) {
-        // TODO: NOT search, observe insert perf
+        // NOTE: Immediate Search
         if (!insert_only) {
           sync_search_kernel(query, query_num, query_dim, recall_at, search_mem_L, Lsearch[0], search_beam_width,
-                             sync_index, currentFileName, false, false, dummy);
+                             sync_index, currentFileName, false, true, dummy);
         } else {
           sleep(1);
         }

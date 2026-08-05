@@ -8,18 +8,33 @@
 #include <time.h>
 
 #include "distance.h"
-#include "nbr/dummy_nbr.h"
-#include "utils/log.h"
+#include "log.h"
+#include "aux_utils.h"
 #include "index.h"
-#include "utils/kmeans_utils.h"
-#include "utils/partition.h"
-#include "utils/timer.h"
+#include "math_utils.h"
+#include "partition_and_pq.h"
+#include "timer.h"
 #include "utils.h"
 
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "linux_aligned_file_reader.h"
+
+#define WARMUP false
+
+void print_stats(std::string category, std::vector<float> percentiles, std::vector<float> results) {
+  std::cout << std::setw(20) << category << ": " << std::flush;
+  for (uint32_t s = 0; s < percentiles.size(); s++) {
+    std::cout << std::setw(8) << percentiles[s] << "%";
+  }
+  std::cout << std::endl;
+  std::cout << std::setw(22) << " " << std::flush;
+  for (uint32_t s = 0; s < percentiles.size(); s++) {
+    std::cout << std::setw(9) << results[s];
+  }
+  std::cout << std::endl;
+}
 
 template<typename T>
 int search_disk_index(int argc, char **argv) {
@@ -29,28 +44,35 @@ int search_disk_index(int argc, char **argv) {
   float *gt_dists = nullptr;
   uint32_t *tags = nullptr;
   size_t query_num, query_dim, gt_num, gt_dim;
-  std::vector<uint64_t> Lvec;
+  std::vector<_u64> Lvec;
 
   int index = 2;
   std::string index_prefix_path(argv[index++]);
-  uint32_t num_threads = std::atoi(argv[index++]);
-  uint32_t beamwidth = std::atoi(argv[index++]);
+  std::string warmup_query_file = index_prefix_path + "_sample_data.bin";
+  std::ignore = std::atoi(argv[index++]) != 0;
+  std::ignore = std::atoi(argv[index++]);
+  _u32 num_threads = std::atoi(argv[index++]);
+  _u32 beamwidth = std::atoi(argv[index++]);
   std::string query_bin(argv[index++]);
   std::string truthset_bin(argv[index++]);
-  uint64_t recall_at = std::atoi(argv[index++]);
+  _u64 recall_at = std::atoi(argv[index++]);
+  std::string result_output_prefix(argv[index++]);
   std::string dist_metric(argv[index++]);
-  std::string nbr_type = argv[index++];
   int search_mode = std::atoi(argv[index++]);
-  uint32_t mem_L = std::atoi(argv[index++]);
+  bool use_page_search = search_mode != 0;
+  std::ignore = std::atoi(argv[index++]);
 
-  ccann::Metric m = ccann::get_metric(dist_metric);
+  pipeann::Metric m = dist_metric == "cosine" ? pipeann::Metric::COSINE : pipeann::Metric::L2;
+  if (dist_metric != "l2" && m == pipeann::Metric::L2) {
+    std::cout << "Unknown distance metric: " << dist_metric << ". Using default(L2) instead." << std::endl;
+  }
 
   std::string disk_index_tag_file = index_prefix_path + "_disk.index.tags";
 
   bool calc_recall_flag = false;
 
   for (int ctr = index; ctr < argc; ctr++) {
-    uint64_t curL = std::atoi(argv[ctr]);
+    _u64 curL = std::atoi(argv[ctr]);
     if (curL >= recall_at)
       Lvec.push_back(curL);
   }
@@ -66,21 +88,27 @@ int search_disk_index(int argc, char **argv) {
   else
     std::cout << " beamwidth: " << beamwidth << std::endl;
 
-  ccann::load_bin<T>(query_bin, query, query_num, query_dim);
+  pipeann::load_bin<T>(query_bin, query, query_num, query_dim);
+  // pipeann::load_aligned_bin<T>(query_bin, query, query_num, query_dim, query_aligned_dim);
 
   if (file_exists(truthset_bin)) {
-    ccann::load_truthset(truthset_bin, gt_ids, gt_dists, gt_num, gt_dim, &tags);
+    pipeann::load_truthset(truthset_bin, gt_ids, gt_dists, gt_num, gt_dim, &tags);
     if (gt_num != query_num) {
       std::cout << "Error. Mismatch in number of queries and ground truth data" << std::endl;
     }
     calc_recall_flag = true;
   }
 
-  auto mem_index = ccann::SSDIndex<T>::load_to_mem(index_prefix_path + "_disk.index", m);
-  auto &_pFlashIndex = *mem_index;
+  std::shared_ptr<AlignedFileReader> reader = nullptr;
+  reader.reset(new LinuxAlignedFileReader());
+
+  pipeann::Index<T> _pFlashIndex(m, query_dim, (uint64_t) 1e8, false, false, false);
+  _pFlashIndex.load_from_disk_index(index_prefix_path);
 
   LOG(INFO) << "Num threads: " << num_threads;
   omp_set_num_threads(num_threads);
+
+  LOG(INFO) << "Use page search: " << use_page_search;
 
   std::cout.setf(std::ios_base::fixed, std::ios_base::floatfield);
   std::cout.precision(2);
@@ -103,23 +131,23 @@ int search_disk_index(int argc, char **argv) {
   std::vector<std::vector<float>> query_result_dists(Lvec.size());
 
   for (uint32_t test_id = 0; test_id < Lvec.size(); test_id++) {
-    uint64_t L = Lvec[test_id];
+    _u64 L = Lvec[test_id];
 
     query_result_ids[test_id].resize(recall_at * query_num);
     query_result_dists[test_id].resize(recall_at * query_num);
     query_result_tags[test_id].resize(recall_at * query_num);
 
-    ccann::QueryStats *stats = new ccann::QueryStats[query_num];
+    pipeann::QueryStats *stats = new pipeann::QueryStats[query_num];
 
     std::vector<uint64_t> query_result_tags_64(recall_at * query_num);
     std::vector<uint32_t> query_result_tags_32(recall_at * query_num);
     auto s = std::chrono::high_resolution_clock::now();
 
 #pragma omp parallel for schedule(dynamic, 1)
-    for (int64_t i = 0; i < (int64_t) query_num; i++) {
+    for (_s64 i = 0; i < (int64_t) query_num; i++) {
       auto s1 = std::chrono::high_resolution_clock::now();
       _pFlashIndex.search(query + (i * query_dim), recall_at, L, query_result_tags_32.data() + (i * recall_at),
-                          query_result_dists[test_id].data() + (i * recall_at), &stats[i]);
+                          query_result_dists[test_id].data() + (i * recall_at));
       auto e1 = std::chrono::high_resolution_clock::now();
       stats[i].total_us = std::chrono::duration_cast<std::chrono::microseconds>(e1 - s1).count();
     }
@@ -128,50 +156,49 @@ int search_disk_index(int argc, char **argv) {
     std::chrono::duration<double> diff = e - s;
     float qps = (float) ((1.0 * (double) query_num) / (1.0 * (double) diff.count()));
 
-    ccann::convert_types<uint32_t, uint32_t>(query_result_tags_32.data(), query_result_tags[test_id].data(),
+    pipeann::convert_types<uint32_t, uint32_t>(query_result_tags_32.data(), query_result_tags[test_id].data(),
                                                (size_t) query_num, (size_t) recall_at);
 
-    float mean_latency = (float) ccann::get_mean_stats(
-        stats, query_num, [](const ccann::QueryStats &stats) { return stats.total_us; });
+    float mean_latency = (float) pipeann::get_mean_stats(
+        stats, query_num, [](const pipeann::QueryStats &stats) { return stats.total_us; });
 
-    float latency_99 = (float) ccann::get_percentile_stats(
-        stats, query_num, 0.99f, [](const ccann::QueryStats &stats) { return stats.total_us; });
+    float latency_999 = (float) pipeann::get_percentile_stats(
+        stats, query_num, 0.999f, [](const pipeann::QueryStats &stats) { return stats.total_us; });
 
-    float mean_hops = (float) ccann::get_mean_stats(stats, query_num,
-                                                      [](const ccann::QueryStats &stats) { return stats.n_hops; });
+    float mean_hops = (float) pipeann::get_mean_stats(stats, query_num,
+                                                      [](const pipeann::QueryStats &stats) { return stats.n_hops; });
 
     float mean_ios =
-        (float) ccann::get_mean_stats(stats, query_num, [](const ccann::QueryStats &stats) { return stats.n_ios; });
+        (float) pipeann::get_mean_stats(stats, query_num, [](const pipeann::QueryStats &stats) { return stats.n_ios; });
 
-    float mean_cpuus = (float) ccann::get_mean_stats(stats, query_num,
-                                                       [](const ccann::QueryStats &stats) { return stats.cpu_us; });
+    float mean_cpuus = (float) pipeann::get_mean_stats(stats, query_num,
+                                                       [](const pipeann::QueryStats &stats) { return stats.cpu_us; });
 
-    float mean_cpu1us = (float) ccann::get_mean_stats(stats, query_num,
-                                                        [](const ccann::QueryStats &stats) { return stats.cpu_us1; });
+    float mean_cpu1us = (float) pipeann::get_mean_stats(stats, query_num,
+                                                        [](const pipeann::QueryStats &stats) { return stats.cpu_us1; });
 
-    float mean_cpu2us = (float) ccann::get_mean_stats(stats, query_num,
-                                                        [](const ccann::QueryStats &stats) { return stats.cpu_us2; });
+    float mean_cpu2us = (float) pipeann::get_mean_stats(stats, query_num,
+                                                        [](const pipeann::QueryStats &stats) { return stats.cpu_us2; });
 
     float mean_ious =
-        (float) ccann::get_mean_stats(stats, query_num, [](const ccann::QueryStats &stats) { return stats.io_us; });
+        (float) pipeann::get_mean_stats(stats, query_num, [](const pipeann::QueryStats &stats) { return stats.io_us; });
 
-    float mean_io1us = (float) ccann::get_mean_stats(stats, query_num,
-                                                       [](const ccann::QueryStats &stats) { return stats.io_us1; });
+    float mean_io1us = (float) pipeann::get_mean_stats(stats, query_num,
+                                                       [](const pipeann::QueryStats &stats) { return stats.io_us1; });
     delete[] stats;
 
     float recall = 0;
     if (calc_recall_flag) {
       /* Attention: in SPACEV, there may be multiple vectors with the same distance,
          which may cause lower than expected recall@1 (?) */
-      recall = (float) ccann::calculate_recall((uint32_t) query_num, gt_ids, gt_dists, (uint32_t) gt_dim,
-                                                 query_result_tags[test_id].data(), (uint32_t) recall_at,
-                                                 (uint32_t) recall_at);
+      recall = (float) pipeann::calculate_recall((_u32) query_num, gt_ids, gt_dists, (_u32) gt_dim,
+                                                 query_result_tags[test_id].data(), (_u32) recall_at, (_u32) recall_at);
     }
 
     std::cout << std::setw(6) << L << std::setw(12) << 1 << std::setw(12) << qps << std::setw(12) << mean_latency
-              << std::setw(12) << latency_99 << std::setw(12) << mean_hops << std::setw(12) << mean_ios << std::setw(12)
-              << mean_cpuus << std::setw(12) << mean_cpu1us << std::setw(12) << mean_cpu2us << std::setw(12)
-              << mean_ious << std::setw(12) << mean_io1us;
+              << std::setw(12) << latency_999 << std::setw(12) << mean_hops << std::setw(12) << mean_ios
+              << std::setw(12) << mean_cpuus << std::setw(12) << mean_cpu1us << std::setw(12) << mean_cpu2us
+              << std::setw(12) << mean_ious << std::setw(12) << mean_io1us;
     if (calc_recall_flag) {
       std::cout << std::setw(12) << recall << std::endl;
     }
@@ -179,35 +206,37 @@ int search_disk_index(int argc, char **argv) {
   // std::this_thread::sleep_for(std::chrono::seconds(10));
 
   // std::cout << "Done searching. Now saving results " << std::endl;
-  // uint64_t test_id = 0;
+  // _u64 test_id = 0;
   // for (auto L : Lvec) {
   //   std::string cur_result_path = result_output_prefix + "_" + std::to_string(L) + "_idx_uint32.bin";
-  //   ccann::save_bin<uint32_t>(cur_result_path, query_result_ids[test_id].data(), query_num, recall_at);
+  //   pipeann::save_bin<_u32>(cur_result_path, query_result_ids[test_id].data(), query_num, recall_at);
 
   //   cur_result_path = result_output_prefix + "_" + std::to_string(L) + "_tags_uint32.bin";
-  //   ccann::save_bin<uint32_t>(cur_result_path, query_result_tags[test_id].data(), query_num, recall_at);
+  //   pipeann::save_bin<_u32>(cur_result_path, query_result_tags[test_id].data(), query_num, recall_at);
   //   cur_result_path = result_output_prefix + "_" + std::to_string(L) + "_dists_float.bin";
-  //   ccann::save_bin<float>(cur_result_path, query_result_dists[test_id++].data(), query_num, recall_at);
+  //   pipeann::save_bin<float>(cur_result_path, query_result_dists[test_id++].data(), query_num, recall_at);
   // }
 
-  // ccann::aligned_free(query);
+  // pipeann::aligned_free(query);
   // if (warmup != nullptr)
-  //   ccann::aligned_free(warmup);
+  //   pipeann::aligned_free(warmup);
   // delete[] gt_ids;
   // delete[] gt_dists;
   return 0;
 }
 
 int main(int argc, char **argv) {
-  if (argc < 12) {
+  if (argc < 14) {
     // tags == 1!
     std::cout << "Usage: " << argv[0]
               << " <index_type (float/int8/uint8)>  <index_prefix_path>"
-                 " <num_threads>  <pipeline width> "
+                 " <single_file_index(0/1)>"
+                 " <num_nodes_to_cache>  <num_threads>  <beamwidth (use 0 to "
+                 "optimize internally)> "
                  " <query_file.bin>  <truthset.bin (use \"null\" for none)> "
-                 " <K> <similarity (cosine/l2/mips)> <nbr_type (pq/rabitq)>"
-                 " <search_mode(0 for beam search / 1 for page search / 2 for pipe search)> <mem_L (0 means not "
-                 "using mem index)> <L1> [L2] etc."
+                 " <K>  <result_output_prefix> <similarity (cosine/l2)> "
+                 " <use_page_search(0/1/2)> <mem_L> <L1> [L2] etc.  See README for "
+                 "more information on parameters."
               << std::endl;
     exit(-1);
   }

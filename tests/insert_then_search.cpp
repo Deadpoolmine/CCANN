@@ -67,31 +67,6 @@ std::string GetTruthFileName(const std::string &truthFilePrefix, int l_start) {
   return fileName;
 }
 
-template<typename T>
-inline uint64_t save_bin_test(const std::string &filename, T *id, float *dist, size_t npts, size_t ndims,
-                              size_t offset = 0) {
-  std::ofstream writer;
-  open_file_to_write(writer, filename);
-
-  LOG(INFO) << "Writing bin: " << filename.c_str();
-  writer.seekp(offset, writer.beg);
-  int npts_i32 = (int) npts, ndims_i32 = (int) ndims;
-  size_t bytes_written = npts * ndims * sizeof(T) + 2 * sizeof(uint32_t);
-  writer.write((char *) &npts_i32, sizeof(int));
-  writer.write((char *) &ndims_i32, sizeof(int));
-  LOG(INFO) << "bin: #pts = " << npts << ", #dims = " << ndims << ", size = " << bytes_written << "B";
-
-  for (int i = 0; i < npts; i++) {
-    for (int j = 0; j < ndims; j++) {
-      writer.write((char *) (id + i * ndims + j), sizeof(T));
-      writer.write((char *) (dist + i * ndims + j), sizeof(float));
-    }
-  }
-  writer.close();
-  LOG(INFO) << "Finished writing bin.";
-  return bytes_written;
-}
-
 template<typename T, typename TagT>
 void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int recall_at, _u32 mem_L, _u64 L,
                         uint32_t beam_width, pipeann::DynamicSSDIndex<T, TagT> &sync_index, std::string &truthset_file,
@@ -179,11 +154,6 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int 
 }
 
 template<typename T, typename TagT>
-void merge_kernel(pipeann::DynamicSSDIndex<T, TagT> &sync_index) {
-  sync_index.final_merge(NUM_INSERT_THREADS);
-}
-
-template<typename T, typename TagT>
 void insertion_kernel(T *data_load, pipeann::DynamicSSDIndex<T, TagT> &sync_index, std::vector<TagT> &insert_vec,
                       size_t dim) {
   pipeann::Timer timer;
@@ -240,8 +210,7 @@ template<typename T, typename TagT>
 void update(const std::string &data_bin, const unsigned L_disk, int vecs_per_step, int num_steps,
             const std::string &index_prefix, const std::string &query_file, const std::string &truthset_file,
             size_t truthset_l_offset, const int recall_at, const std::vector<_u64> &Lsearch, const unsigned beam_width,
-            const uint32_t search_beam_width, const uint32_t search_mem_L, pipeann::Distance<T> *dist_cmp,
-            bool insert_only) {
+            const uint32_t search_beam_width, const uint32_t search_mem_L, pipeann::Distance<T> *dist_cmp) {
   pipeann::Parameters paras;
   paras.Set<unsigned>("L_disk", L_disk);
   paras.Set<unsigned>("R_disk", 0);
@@ -269,19 +238,18 @@ void update(const std::string &data_bin, const unsigned L_disk, int vecs_per_ste
 
   uint64_t res = 0;
 
-  std::string currentFileName = GetTruthFileName(truthset_file, res + truthset_l_offset);
+  auto currentFileName = GetTruthFileName(truthset_file, res + truthset_l_offset);
   begin_time = globalTimer.elapsed() / 1.0e6f;
   ShowMemoryStatus(sync_index._disk_index_prefix_in);
 
   std::vector<double> ref_diskio;
-  if (!insert_only) {
-    for (size_t j = 0; j < Lsearch.size(); ++j) {
-      double diskio = 0;
-      sync_search_kernel(query, query_num, query_dim, recall_at, search_mem_L, Lsearch[j], search_beam_width,
-                         sync_index, currentFileName, false, true, diskio);
-      ref_diskio.push_back(diskio);
-    }
+  for (size_t j = 0; j < Lsearch.size(); ++j) {
+    double diskio = 0;
+    sync_search_kernel(query, query_num, query_dim, recall_at, search_mem_L, Lsearch[j], search_beam_width, sync_index,
+                       currentFileName, false, true, diskio);
+    ref_diskio.push_back(diskio);
   }
+  sync_index.show_statistics();
 
   int inMemorySize = 0;
   std::future<void> merge_future;
@@ -299,33 +267,27 @@ void update(const std::string &data_bin, const unsigned L_disk, int vecs_per_ste
 
     std::future<void> insert_future = std::async(std::launch::async, insertion_kernel<T, TagT>, data_load.data(),
                                                  std::ref(sync_index), std::ref(insert_vec), dim);
-
     int total_queries = 0;
     std::future_status insert_status;
     do {
-      insert_status = insert_future.wait_for(std::chrono::seconds(100));
+      insert_status = insert_future.wait_for(std::chrono::seconds(5));
       if (insert_status == std::future_status::deferred) {
         LOG(INFO) << "deferred\n";
       } else if (insert_status == std::future_status::timeout) {
         ShowMemoryStatus(sync_index._disk_index_prefix_in);
-        LOG(INFO) << "Number of vectors: " << sync_index._disk_index->cur_id;
-        double dummy;
-        // for (uint32_t j = 0; j < Lsearch.size(); ++j) {
-        // TODO: NOT search, observe insert perf
-        if (!insert_only) {
-          sync_search_kernel(query, query_num, query_dim, recall_at, search_mem_L, Lsearch[0], search_beam_width,
-                             sync_index, currentFileName, false, false, dummy);
-        } else {
-          sleep(1);
-        }
-        // }
-        total_queries += query_num;
-        LOG(INFO) << "Queries processed: " << total_queries;
+        // LOG(INFO) << "Number of vectors: " << sync_index._disk_index->cur_id;
+        // double dummy;
+        // // for (uint32_t j = 0; j < Lsearch.size(); ++j) {
+        // sync_search_kernel(query, query_num, query_dim, recall_at, search_mem_L, Lsearch[0], search_beam_width,
+        //                    sync_index, currentFileName, false, false, dummy);
+        // sleep(1);
+        // // }
+        // total_queries += query_num;
+        // LOG(INFO) << "Queries processed: " << total_queries;
+        LOG(INFO) << "Insertions ongoing...\n";
       }
       if (insert_status == std::future_status::ready) {
         LOG(INFO) << "Insertions complete!\n";
-        sync_index.show_statistics();
-        sync_index.reset_statistics();
       }
     } while (insert_status != std::future_status::ready);
 
@@ -334,28 +296,18 @@ void update(const std::string &data_bin, const unsigned L_disk, int vecs_per_ste
     LOG(INFO) << "Search after update, current vector number: " << res;
 
     res += vecs_per_step;
-    currentFileName = GetTruthFileName(truthset_file, res + truthset_l_offset);
+    auto currentFileName = GetTruthFileName(truthset_file, res + truthset_l_offset);
 
+    LOG(INFO) << "Reporting search stats";
+    sync_index.reset_statistics();
     std::vector<double> disk_ios;
-    if (!insert_only) {
-      for (size_t j = 0; j < Lsearch.size(); ++j) {
-        double diskio = 0;
-        sync_search_kernel(query, query_num, query_dim, recall_at, search_mem_L, Lsearch[j], search_beam_width,
-                           sync_index, currentFileName, false, true, diskio);
-        disk_ios.push_back(diskio);
-      }
+    for (size_t j = 0; j < Lsearch.size(); ++j) {
+      double diskio = 0;
+      sync_search_kernel(query, query_num, query_dim, recall_at, search_mem_L, Lsearch[j], search_beam_width,
+                         sync_index, currentFileName, false, true, diskio);
+      disk_ios.push_back(diskio);
     }
-
-    // if (i == num_steps - 1 && num_steps >= 10) {  // store the last index, figs 9 and 11 uses num_steps < 10.
-    //   LOG(INFO) << "Store the last index to disk.";
-    //   merge_future = std::async(std::launch::async, merge_kernel<T, TagT>, std::ref(sync_index));
-    //   std::future_status merge_status;
-    //   do {
-    //     merge_status = merge_future.wait_for(std::chrono::seconds(10));
-    //   } while (merge_status != std::future_status::ready);
-    //   LOG(INFO) << "Store finished.";
-    //   exit(0);
-    // }
+    sync_index.show_statistics();
   }
 }
 
@@ -364,7 +316,7 @@ int main(int argc, char **argv) {
     LOG(INFO) << "Correct usage: " << argv[0] << " <type[int8/uint8/float]> <data_bin> <L_disk>"
               << " <vecs_per_step> <num_steps> <insert_threads> <search_threads> <search_mode>"
               << " <index_prefix> <query_file> <truthset_prefix> <truthset_l_offset> <recall@>"
-              << " <#beam_width> <search_beam_width> <mem_L> <insert_only> <Lsearch> <L2>";
+              << " <#beam_width> <search_beam_width> <mem_L> <Lsearch> <L2>";
     exit(-1);
   }
 
@@ -400,8 +352,6 @@ int main(int argc, char **argv) {
   unsigned beam_width = (unsigned) std::atoi(argv[arg_no++]);
   unsigned search_beam_width = (unsigned) std::atoi(argv[arg_no++]);
   unsigned search_mem_L = (unsigned) std::atoi(argv[arg_no++]);  // 0 if no mem_index is used.
-  bool insert_only = (unsigned) std::atoi(argv[arg_no++]) == 1;
-
   std::vector<uint64_t> Lsearch;
   for (int i = arg_no; i < argc; ++i) {
     Lsearch.push_back(std::atoi(argv[i]));
@@ -413,17 +363,17 @@ int main(int argc, char **argv) {
     pipeann::DistanceL2Int8 dist_cmp;
     update<int8_t, unsigned>(data_bin, L_disk, vecs_per_step, num_steps, index_prefix, query_file, truthset,
                              truthset_l_offset, recall_at, Lsearch, beam_width, search_beam_width, search_mem_L,
-                             &dist_cmp, insert_only);
+                             &dist_cmp);
   } else if (std::string(argv[1]) == std::string("uint8")) {
     pipeann::DistanceL2UInt8 dist_cmp;
     update<uint8_t, unsigned>(data_bin, L_disk, vecs_per_step, num_steps, index_prefix, query_file, truthset,
                               truthset_l_offset, recall_at, Lsearch, beam_width, search_beam_width, search_mem_L,
-                              &dist_cmp, insert_only);
+                              &dist_cmp);
   } else if (std::string(argv[1]) == std::string("float")) {
     pipeann::DistanceL2 dist_cmp;
     update<float, unsigned>(data_bin, L_disk, vecs_per_step, num_steps, index_prefix, query_file, truthset,
                             truthset_l_offset, recall_at, Lsearch, beam_width, search_beam_width, search_mem_L,
-                            &dist_cmp, insert_only);
+                            &dist_cmp);
   } else
     LOG(INFO) << "Unsupported type. Use float/int8/uint8";
 }

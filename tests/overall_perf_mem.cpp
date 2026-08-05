@@ -1,8 +1,8 @@
-#include "linux_aligned_file_reader.h"
-#include "nbr/dummy_nbr.h"
-#include "ssd_index.h"
+#include "parameters.h"
+#include "v2/dynamic_index.h"
 
 #include <index.h>
+#include <neighbor.h>
 #include <cstddef>
 #include <cstdlib>
 #include <future>
@@ -10,7 +10,7 @@
 #include <omp.h>
 #include <string.h>
 #include <time.h>
-#include "utils/timer.h"
+#include <timer.h>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
@@ -19,9 +19,10 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
+#include "aux_utils.h"
 #include "index.h"
-#include "utils/kmeans_utils.h"
-#include "utils/partition.h"
+#include "math_utils.h"
+#include "partition_and_pq.h"
 #include "utils.h"
 
 #include <sys/mman.h>
@@ -37,8 +38,8 @@
 constexpr uint64_t kMaxPoints = 1.5e8;
 
 int begin_time = 0;
-ccann::Timer globalTimer;
-ccann::IndexBuildParameters params;
+pipeann::Timer globalTimer;
+pipeann::Parameters params;
 
 // acutually also shows disk size
 void ShowMemoryStatus(const std::string &filename) {
@@ -73,9 +74,34 @@ std::string GetTruthFileName(std::string &truthFilePrefix, int r_start) {
   return fileName;
 }
 
+template<typename T>
+inline uint64_t save_bin_test(const std::string &filename, T *id, float *dist, size_t npts, size_t ndims,
+                              size_t offset = 0) {
+  std::ofstream writer;
+  open_file_to_write(writer, filename);
+
+  std::cout << "Writing bin: " << filename.c_str() << std::endl;
+  writer.seekp(offset, writer.beg);
+  int npts_i32 = (int) npts, ndims_i32 = (int) ndims;
+  size_t bytes_written = npts * ndims * sizeof(T) + 2 * sizeof(uint32_t);
+  writer.write((char *) &npts_i32, sizeof(int));
+  writer.write((char *) &ndims_i32, sizeof(int));
+  std::cout << "bin: #pts = " << npts << ", #dims = " << ndims << ", size = " << bytes_written << "B" << std::endl;
+
+  for (int i = 0; i < npts; i++) {
+    for (int j = 0; j < ndims; j++) {
+      writer.write((char *) (id + i * ndims + j), sizeof(T));
+      writer.write((char *) (dist + i * ndims + j), sizeof(float));
+    }
+  }
+  writer.close();
+  std::cout << "Finished writing bin." << std::endl;
+  return bytes_written;
+}
+
 template<typename T, typename TagT>
-void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int recall_at, uint64_t L,
-                        ccann::Index<T, TagT> &sync_index, std::string &truthset_file, bool merged, bool calRecall,
+void sync_search_kernel(T *query, size_t query_num, size_t query_aligned_dim, const int recall_at, _u64 L,
+                        pipeann::Index<T, TagT> &sync_index, std::string &truthset_file, bool merged, bool calRecall,
                         double &disk_io) {
   unsigned *gt_ids = NULL;
   float *gt_dists = NULL;
@@ -87,21 +113,21 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int 
 
   if (calRecall) {
     std::cout << "current truthfile: " << truthset_file << std::endl;
-    ccann::load_truthset(truthset_file, gt_ids, gt_dists, gt_num, gt_dim);
+    pipeann::load_truthset(truthset_file, gt_ids, gt_dists, gt_num, gt_dim);
   }
 
   float *query_result_dists = new float[recall_at * query_num];
   TagT *query_result_tags = new TagT[recall_at * query_num];
 
-  for (uint32_t q = 0; q < query_num; q++) {
-    for (uint32_t r = 0; r < (uint32_t) recall_at; r++) {
+  for (_u32 q = 0; q < query_num; q++) {
+    for (_u32 r = 0; r < (_u32) recall_at; r++) {
       query_result_tags[q * recall_at + r] = std::numeric_limits<TagT>::max();
       query_result_dists[q * recall_at + r] = std::numeric_limits<float>::max();
     }
   }
 
   std::vector<double> latency_stats(query_num, 0);
-  ccann::QueryStats *stats = new ccann::QueryStats[query_num];
+  pipeann::QueryStats *stats = new pipeann::QueryStats[query_num];
   std::string recall_string = "Recall@" + std::to_string(recall_at);
   std::cout << std::setw(4) << "Ls" << std::setw(12) << "QPS " << std::setw(18) << "Mean Lat" << std::setw(12)
             << "50 Lat" << std::setw(12) << "90 Lat" << std::setw(12) << "95 Lat" << std::setw(12) << "99 Lat"
@@ -115,7 +141,7 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int 
   for (int64_t i = 0; i < (int64_t) query_num; i++) {
     auto qs = std::chrono::high_resolution_clock::now();
 
-    sync_index.search_with_tags(query + i * query_dim, recall_at, L, query_result_tags + i * recall_at,
+    sync_index.search_with_tags(query + i * query_aligned_dim, recall_at, L, query_result_tags + i * recall_at,
                                 query_result_dists + i * recall_at);
 
     auto qe = std::chrono::high_resolution_clock::now();
@@ -131,24 +157,27 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int 
 
   int current_time = globalTimer.elapsed() / 1.0e6f - begin_time;
   if (calRecall) {
-    recall = ccann::calculate_recall(query_num, gt_ids, gt_dists, gt_dim, query_result_tags, recall_at, recall_at);
+    for (int i = 0; i < recall_at; ++i) {
+      LOG(INFO) << query_result_tags[i] << " " << gt_ids[i];
+    }
+    recall = pipeann::calculate_recall(query_num, gt_ids, gt_dists, gt_dim, query_result_tags, recall_at, recall_at);
     delete[] gt_ids;
   }
 
   std::cout << "search current time: " << current_time << std::endl;
 
   float mean_ios =
-      (float) ccann::get_mean_stats(stats, query_num, [](const ccann::QueryStats &stats) { return stats.n_ios; });
+      (float) pipeann::get_mean_stats(stats, query_num, [](const pipeann::QueryStats &stats) { return stats.n_ios; });
 
   std::sort(latency_stats.begin(), latency_stats.end());
   std::cout << std::setw(4) << L << std::setw(12) << qps << std::setw(18)
             << ((float) std::accumulate(latency_stats.begin(), latency_stats.end(), 0)) / (float) query_num
-            << std::setw(12) << (float) latency_stats[(uint64_t) (0.50 * ((double) query_num))] << std::setw(12)
-            << (float) latency_stats[(uint64_t) (0.90 * ((double) query_num))] << std::setw(12)
-            << (float) latency_stats[(uint64_t) (0.95 * ((double) query_num))] << std::setw(12)
-            << (float) latency_stats[(uint64_t) (0.99 * ((double) query_num))] << std::setw(12)
-            << (float) latency_stats[(uint64_t) (0.999 * ((double) query_num))] << std::setw(12) << recall
-            << std::setw(12) << mean_ios << std::endl;
+            << std::setw(12) << (float) latency_stats[(_u64) (0.50 * ((double) query_num))] << std::setw(12)
+            << (float) latency_stats[(_u64) (0.90 * ((double) query_num))] << std::setw(12)
+            << (float) latency_stats[(_u64) (0.95 * ((double) query_num))] << std::setw(12)
+            << (float) latency_stats[(_u64) (0.99 * ((double) query_num))] << std::setw(12)
+            << (float) latency_stats[(_u64) (0.999 * ((double) query_num))] << std::setw(12) << recall << std::setw(12)
+            << mean_ios << std::endl;
   disk_io = mean_ios;
 
   delete[] query_result_dists;
@@ -157,22 +186,22 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int 
 }
 
 template<typename T, typename TagT>
-void merge_kernel(ccann::Index<T, TagT> &sync_index, std::string &save_path) {
+void merge_kernel(pipeann::Index<T, TagT> &sync_index, std::string &save_path) {
   sync_index.consolidate(params);
 }
 
 template<typename T, typename TagT>
-void deletion_kernel(T *data_load, ccann::Index<T, TagT> &sync_index, std::vector<TagT> &delete_vec,
+void deletion_kernel(T *data_load, pipeann::Index<T, TagT> &sync_index, std::vector<TagT> &delete_vec,
                      size_t aligned_dim) {
-  ccann::Timer timer;
+  pipeann::Timer timer;
   size_t npts = delete_vec.size();
   std::vector<double> delete_latencies(npts, 0);
   std::cout << "Begin Delete" << std::endl;
   // std::atomic_size_t success(0);
 #pragma omp parallel for num_threads(NUM_DELETE_THREADS)
-  for (int64_t i = 0; i < (int64_t) delete_vec.size(); i++) {
-    ccann::Timer delete_timer;
-    ccann::QueryStats stats;
+  for (_s64 i = 0; i < (_s64) delete_vec.size(); i++) {
+    pipeann::Timer delete_timer;
+    pipeann::QueryStats stats;
     sync_index.lazy_delete(delete_vec[i]);
     // success++;
     delete_latencies[i] = ((double) delete_timer.elapsed());
@@ -199,16 +228,16 @@ void deletion_kernel(T *data_load, ccann::Index<T, TagT> &sync_index, std::vecto
 }
 
 template<typename T, typename TagT>
-void insertion_kernel(T *data_load, ccann::Index<T, TagT> &sync_index, std::vector<TagT> &insert_vec,
+void insertion_kernel(T *data_load, pipeann::Index<T, TagT> &sync_index, std::vector<TagT> &insert_vec,
                       size_t aligned_dim) {
-  ccann::Timer timer;
+  pipeann::Timer timer;
   size_t npts = insert_vec.size();
   std::vector<double> insert_latencies(npts, 0);
   std::cout << "Begin Insert" << std::endl;
   std::atomic_size_t success(0);
 #pragma omp parallel for num_threads(NUM_INSERT_THREADS)
-  for (int64_t i = 0; i < (int64_t) insert_vec.size(); i++) {
-    ccann::Timer insert_timer;
+  for (_s64 i = 0; i < (_s64) insert_vec.size(); i++) {
+    pipeann::Timer insert_timer;
     sync_index.insert_point(data_load + aligned_dim * i, params, insert_vec[i]);
     success++;
     insert_latencies[i] = ((double) insert_timer.elapsed());
@@ -256,26 +285,98 @@ void get_trace(std::string data_bin, uint64_t l_start, uint64_t r_start, uint64_
 template<typename T, typename TagT>
 void update(const std::string &data_bin, const unsigned L_disk, const unsigned R_disk, const float alpha_disk, int step,
             const size_t base_num, const unsigned nodes_to_cache, std::string &save_path, const std::string &query_file,
-            std::string &truthset_file, const int recall_at, std::vector<uint64_t> Lsearch, const unsigned beam_width,
-            ccann::Distance<T> *dist_cmp) {
+            std::string &truthset_file, const int recall_at, std::vector<_u64> Lsearch, const unsigned beam_width,
+            pipeann::Distance<T> *dist_cmp) {
   std::vector<T> data_load;
   size_t dim{}, aligned_dim{};
 
-  ccann::Timer timer;
+  pipeann::Timer timer;
 
   std::cout << "Loading queries " << std::endl;
   T *query = NULL;
-  size_t query_num, query_dim;
-  ccann::load_bin<T>(query_file, query, query_num, query_dim);
+  size_t query_num, query_dim, query_aligned_dim;
+  pipeann::load_aligned_bin<T>(query_file, query, query_num, query_dim, query_aligned_dim);
 
   dim = query_dim;
-  aligned_dim = query_dim;
-  ccann::Metric metric = ccann::Metric::L2;
+  aligned_dim = query_aligned_dim;
+  pipeann::Metric metric = pipeann::Metric::L2;
+  pipeann::Index<T, TagT> sync_index(metric, dim, kMaxPoints, true, false, true);
+  sync_index.load_from_disk_index(save_path + "_disk.index");
 
-  std::unique_ptr<ccann::Index<T, TagT>> mem_index(ccann::SSDIndex<T, TagT>::load_to_mem(save_path, metric));
-  auto &sync_index = *mem_index;
+  // auto dis = [&](uint64_t a, uint64_t b) {
+  //   auto& d = sync_index._aligned_dim;
+  //   auto& data = sync_index._data;
+  //   return sync_index._distance->compare(data + d * a, data + d * b, d);
+  // };
 
-  params.set(sync_index.range, 128, 384, 1.2);
+  // constexpr int L = 30;
+  // constexpr int K = 4;
+  // uint64_t hit_knn = 0, tot_knn = 0;
+  // std::vector<uint32_t> init_ids;
+  // init_ids.push_back(sync_index._ep);
+  // for (int i = 0; i < 10000; ++i) {
+  //   T vec[128];
+  //   for (int i = 0; i < 128; ++i) {
+  //     vec[i] = rand() % UINT8_MAX;
+  //   }
+
+  //   std::vector<pipeann::Neighbor> best_L_nodes, expanded_nodes_info;
+  //   tsl::robin_set<unsigned> expanded_nodes_ids;
+  //   sync_index.iterate_to_fixed_point(vec, L, init_ids, expanded_nodes_info, expanded_nodes_ids, best_L_nodes);
+  //   std::sort(expanded_nodes_info.begin(), expanded_nodes_info.end());
+  //   // top K nbrs compare similarity.
+  //   std::unordered_set<unsigned> knns_set;
+  //   for (int j = 0; j < expanded_nodes_ids.size(); ++j) {
+  //     knns_set.insert(expanded_nodes_info[j].id);
+  //   }
+
+  //   auto mx_hit_knn = 0, mx_hit_id = 0, mx_tot_knn = 0;
+  //   for (int j = 0; j < 2; ++j) {
+  //     // LOG(INFO) << "Cur id: " << id << " Nbr id: " << nbrs[j] << " Distance: " << dis(id, nbrs[j]);
+  //     int cur_id = expanded_nodes_info[j].id;
+  //     // int cur_id = rand() % sync_index.disk_npts;
+  //     std::vector<pipeann::Neighbor> best_L_nodes, expanded_nodes_info;
+  //     tsl::robin_set<unsigned> expanded_nodes_ids;
+  //     sync_index.iterate_to_fixed_point(sync_index._data + cur_id * sync_index._aligned_dim, L, init_ids,
+  //                                       expanded_nodes_info, expanded_nodes_ids, best_L_nodes);
+  //     std::sort(expanded_nodes_info.begin(), expanded_nodes_info.end());
+
+  //     int cur_hit_knn = 0;
+  //     for (int k = 0; k < L; ++k) {
+  //       auto nbr_knn_id = expanded_nodes_info[k].id;
+  //       bool cur_hit = false;
+  //       if (knns_set.find(nbr_knn_id) != knns_set.end()) {
+  //         ++cur_hit_knn;
+  //         cur_hit = true;
+  //       }
+  //       // LOG(INFO) << "Top " << j << " nbr id: " << cur_id << " Nbr2 id: " << nbr_knn_id
+  //       //           << " Distance: " << dis(cur_id, nbr_knn_id) << " " << dis(id, nbr_knn_id) << " hit " << cur_hit;
+  //     }
+  //     if (mx_hit_knn < cur_hit_knn) {
+  //       mx_hit_knn = cur_hit_knn;
+  //       mx_hit_id = j;
+  //       mx_tot_knn = L;
+  //     }
+  //     // mx_hit_knn = std::max(mx_hit_knn, cur_hit_knn);
+  //     // LOG(INFO) << "Top " << j << " hit rate " << cur_hit_knn << " / " << expanded_nodes_info.size();
+  //     // hit_knn += cur_hit_knn;
+  //     // tot_knn += expanded_nodes_info.size();
+  //     // LOG(INFO) << "Hit knn: " << hit_knn << " Total knn: " << tot_knn;
+  //   }
+  //   LOG(INFO) << "Max hit knn: " << mx_hit_knn << "/" << mx_tot_knn << " top k: " << mx_hit_id;
+  //   hit_knn += mx_hit_knn;
+  //   tot_knn += mx_tot_knn;
+  //   LOG(INFO) << "Hit knn: " << hit_knn << " Total knn: " << tot_knn;
+  // }
+
+  // exit(0);
+
+  sync_index.enable_delete();
+
+  params.Set<unsigned>("L", 128);
+  params.Set<unsigned>("R", sync_index.range);
+  params.Set("C", 384);
+  params.Set<float>("alpha", 1.2);
 
   std::cout << "Searching before inserts: " << std::endl;
 
@@ -287,15 +388,16 @@ void update(const std::string &data_bin, const unsigned L_disk, const unsigned R
   std::vector<double> ref_diskio;
   for (size_t j = 0; j < Lsearch.size(); ++j) {
     double diskio = 0;
-    sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[j], sync_index, currentFileName, false, true,
-                       diskio);
+    sync_search_kernel(query, query_num, query_aligned_dim, recall_at, Lsearch[j], sync_index, currentFileName, false,
+                       true, diskio);
     ref_diskio.push_back(diskio);
   }
+  exit(0);
 
   int batch = step * 10;
   int inMemorySize = 0;
   std::future<void> merge_future;
-  uint64_t index_npts = sync_index._nd;
+  uint64_t index_npts = sync_index.disk_npts;
   uint64_t vecs_per_step = index_npts / step;
   for (int i = 0; i < batch; i++) {
     std::cout << "Batch: " << i << " Total Batch : " << step << std::endl;
@@ -322,7 +424,7 @@ void update(const std::string &data_bin, const unsigned L_disk, const unsigned R
         std::cout << "deferred\n";
       } else if (insert_status == std::future_status::timeout || delete_status == std::future_status::timeout) {
         // double dummy;
-        // sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[0], sync_index, currentFileName,
+        // sync_search_kernel(query, query_num, query_aligned_dim, recall_at, Lsearch[0], sync_index, currentFileName,
         //                    false, false, dummy);
         // total_queries += query_num;
         // std::cout << "Queries processed: " << total_queries << std::endl;
@@ -344,8 +446,8 @@ void update(const std::string &data_bin, const unsigned L_disk, const unsigned R
 
     for (size_t j = 0; j < Lsearch.size(); ++j) {
       double diskio = 0;
-      sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[j], sync_index, currentFileName, false, true,
-                         diskio);
+      sync_search_kernel(query, query_num, query_aligned_dim, recall_at, Lsearch[j], sync_index, currentFileName, false,
+                         true, diskio);
     }
 
     if (i == batch - 1) {
@@ -361,13 +463,13 @@ void update(const std::string &data_bin, const unsigned L_disk, const unsigned R
       do {
         merge_status = merge_future.wait_for(std::chrono::seconds(10));
         // double dummy = 0;
-        // sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[0], sync_index, currentFileName,
+        // sync_search_kernel(query, query_num, query_aligned_dim, recall_at, Lsearch[0], sync_index, currentFileName,
         //                    false, false, dummy);
       } while (merge_status != std::future_status::ready);
       for (size_t j = 0; j < Lsearch.size(); ++j) {
         double dummy = 0;
-        sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[j], sync_index, currentFileName, false, true,
-                           dummy);
+        sync_search_kernel(query, query_num, query_aligned_dim, recall_at, Lsearch[j], sync_index, currentFileName,
+                           false, true, dummy);
       }
       std::cout << "Merge finished " << std::endl;
     }
@@ -403,15 +505,15 @@ int main(int argc, char **argv) {
   }
 
   if (std::string(argv[1]) == std::string("int8")) {
-    ccann::DistanceL2Int8 dist_cmp;
+    pipeann::DistanceL2Int8 dist_cmp;
     update<int8_t, unsigned>(data_bin, L_disk, R_disk, alpha_disk, step, num_start, nodes_to_cache, save_path,
                              query_file, truthset, recall_at, Lsearch, beam_width, &dist_cmp);
   } else if (std::string(argv[1]) == std::string("uint8")) {
-    ccann::DistanceL2UInt8 dist_cmp;
+    pipeann::DistanceL2UInt8 dist_cmp;
     update<uint8_t, unsigned>(data_bin, L_disk, R_disk, alpha_disk, step, num_start, nodes_to_cache, save_path,
                               query_file, truthset, recall_at, Lsearch, beam_width, &dist_cmp);
   } else if (std::string(argv[1]) == std::string("float")) {
-    ccann::DistanceL2Float dist_cmp;
+    pipeann::DistanceL2 dist_cmp;
     update<float, unsigned>(data_bin, L_disk, R_disk, alpha_disk, step, num_start, nodes_to_cache, save_path,
                             query_file, truthset, recall_at, Lsearch, beam_width, &dist_cmp);
   } else

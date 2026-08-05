@@ -6,3 +6,6 @@ data/*
 data-example/*
 figures/*
 scripts/tests/drop_cache
+scripts/tools/converters/bvecs_to_bin
+scripts/tools/converters/fvecs_to_bin
+scripts/tools/converters/ivecs_to_bin
