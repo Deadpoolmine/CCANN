@@ -263,7 +263,7 @@ int aux_main(int argc, char **argv) {
 
     delete[] closest_points_part;
     delete[] dist_closest_points_part;
-    pipeann::aligned_free(base_data);
+    ccann::aligned_free(base_data);
   }
 
   for (_u64 i = 0; i < nqueries; i++) {
@@ -281,7 +281,7 @@ int aux_main(int argc, char **argv) {
     uint32_t *all_tags;
     std::string tag_file = std::string(argv[6]);
     size_t tag_pts, tag_dim;
-    pipeann::load_bin(tag_file, all_tags, tag_pts, tag_dim);
+    ccann::load_bin(tag_file, all_tags, tag_pts, tag_dim);
 
     std::cout << "Loaded tags for " << tag_pts << " points.\n";
     for (uint64_t i = 0; i < nqueries * k; i++) {
@@ -290,7 +290,7 @@ int aux_main(int argc, char **argv) {
   }
 
   save_groundtruth_as_one_file(gt_file, closest_points, dist_closest_points, nqueries, k, tags);
-  pipeann::aligned_free(query_data);
+  ccann::aligned_free(query_data);
   delete[] closest_points;
   delete[] dist_closest_points;
   if (tags != nullptr) {

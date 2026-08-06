@@ -13,8 +13,8 @@ template<class T>
 void convert(char *path) {
   T *data;
   size_t num_points, dim;
-  pipeann::load_bin<T>(path, data, num_points, dim);
-  pipeann::save_bin_sector_aligned<T>(std::string(path) + ".aligned", data, num_points, dim);
+  ccann::load_bin<T>(path, data, num_points, dim);
+  ccann::save_bin_sector_aligned<T>(std::string(path) + ".aligned", data, num_points, dim);
 }
 
 int main(int argc, char **argv) {

@@ -34,7 +34,7 @@
 #define DeleteQPS 1000
 
 int begin_time = 0;
-pipeann::Timer globalTimer;
+ccann::Timer globalTimer;
 
 // acutually also shows disk size
 void ShowMemoryStatus(const std::string &filename) {
@@ -96,7 +96,7 @@ inline uint64_t save_bin_test(const std::string &filename, T *id, float *dist, s
 
 template<typename T, typename TagT>
 void sync_search_kernel(T *query, size_t query_num, size_t query_aligned_dim, const int recall_at, _u64 L,
-                        uint32_t beam_width, pipeann::DynamicSSDIndex<T, TagT> &sync_index, std::string &truthset_file,
+                        uint32_t beam_width, ccann::DynamicSSDIndex<T, TagT> &sync_index, std::string &truthset_file,
                         bool merged, bool calRecall, double &disk_io) {
   unsigned *gt_ids = NULL;
   float *gt_dists = NULL;
@@ -108,7 +108,7 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_aligned_dim, co
 
   if (calRecall) {
     std::cout << "current truthfile: " << truthset_file << std::endl;
-    pipeann::load_truthset(truthset_file, gt_ids, gt_dists, gt_num, gt_dim);
+    ccann::load_truthset(truthset_file, gt_ids, gt_dists, gt_num, gt_dim);
   }
 
   float *query_result_dists = new float[recall_at * query_num];
@@ -122,7 +122,7 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_aligned_dim, co
   }
 
   std::vector<double> latency_stats(query_num, 0);
-  pipeann::QueryStats *stats = new pipeann::QueryStats[query_num];
+  ccann::QueryStats *stats = new ccann::QueryStats[query_num];
   std::string recall_string = "Recall@" + std::to_string(recall_at);
   std::cout << std::setw(4) << "Ls" << std::setw(12) << "QPS " << std::setw(18) << "Mean Lat" << std::setw(12)
             << "50 Lat" << std::setw(12) << "90 Lat" << std::setw(12) << "95 Lat" << std::setw(12) << "99 Lat"
@@ -152,14 +152,14 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_aligned_dim, co
 
   int current_time = globalTimer.elapsed() / 1.0e6f - begin_time;
   if (calRecall) {
-    recall = pipeann::calculate_recall(query_num, gt_ids, gt_dists, gt_dim, query_result_tags, recall_at, recall_at);
+    recall = ccann::calculate_recall(query_num, gt_ids, gt_dists, gt_dim, query_result_tags, recall_at, recall_at);
     delete[] gt_ids;
   }
 
   std::cout << "search current time: " << current_time << std::endl;
 
   float mean_ios =
-      (float) pipeann::get_mean_stats(stats, query_num, [](const pipeann::QueryStats &stats) { return stats.n_ios; });
+      (float) ccann::get_mean_stats(stats, query_num, [](const ccann::QueryStats &stats) { return stats.n_ios; });
 
   std::sort(latency_stats.begin(), latency_stats.end());
   std::cout << std::setw(4) << L << std::setw(12) << qps << std::setw(18)
@@ -178,21 +178,21 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_aligned_dim, co
 }
 
 template<typename T, typename TagT>
-void merge_kernel(pipeann::DynamicSSDIndex<T, TagT> &sync_index, std::string &save_path) {
+void merge_kernel(ccann::DynamicSSDIndex<T, TagT> &sync_index, std::string &save_path) {
   sync_index.final_merge(NUM_MERGE_THREADS, 20);
 }
 
 template<typename T, typename TagT>
-void deletion_kernel(T *data_load, pipeann::DynamicSSDIndex<T, TagT> &sync_index, std::vector<TagT> &delete_vec,
+void deletion_kernel(T *data_load, ccann::DynamicSSDIndex<T, TagT> &sync_index, std::vector<TagT> &delete_vec,
                      size_t aligned_dim) {
-  pipeann::Timer timer;
+  ccann::Timer timer;
   size_t npts = delete_vec.size();
   std::vector<double> delete_latencies(npts, 0);
   std::cout << "Begin Delete" << std::endl;
 #pragma omp parallel for num_threads(NUM_DELETE_THREADS)
   for (_s64 i = 0; i < (_s64) delete_vec.size(); i++) {
-    pipeann::Timer delete_timer;
-    pipeann::QueryStats stats;
+    ccann::Timer delete_timer;
+    ccann::QueryStats stats;
     sync_index.lazy_delete(delete_vec[i]);
     delete_latencies[i] = ((double) delete_timer.elapsed());
   }
@@ -205,16 +205,16 @@ void deletion_kernel(T *data_load, pipeann::DynamicSSDIndex<T, TagT> &sync_index
 }
 
 template<typename T, typename TagT>
-void insertion_kernel(T *data_load, pipeann::DynamicSSDIndex<T, TagT> &sync_index, std::vector<TagT> &insert_vec,
+void insertion_kernel(T *data_load, ccann::DynamicSSDIndex<T, TagT> &sync_index, std::vector<TagT> &insert_vec,
                       size_t aligned_dim) {
-  pipeann::Timer timer;
+  ccann::Timer timer;
   size_t npts = insert_vec.size();
   std::vector<double> insert_latencies(npts, 0);
   std::cout << "Begin Insert" << std::endl;
   std::atomic_size_t success(0);
 #pragma omp parallel for num_threads(NUM_INSERT_THREADS)
   for (_s64 i = 0; i < (_s64) insert_vec.size(); i++) {
-    pipeann::Timer insert_timer;
+    ccann::Timer insert_timer;
     sync_index.insert(data_load + aligned_dim * i, insert_vec[i]);
     success++;
     insert_latencies[i] = ((double) insert_timer.elapsed());
@@ -256,8 +256,8 @@ void get_trace(std::string data_bin, uint64_t l_start, uint64_t r_start, uint64_
 template<typename T, typename TagT>
 void update(const std::string &data_bin, const unsigned L_disk, int step, const unsigned nodes_to_cache,
             std::string &save_path, const std::string &query_file, std::string &truthset_file, const int recall_at,
-            std::vector<_u64> Lsearch, const unsigned beam_width, pipeann::Distance<T> *dist_cmp) {
-  pipeann::Parameters paras;
+            std::vector<_u64> Lsearch, const unsigned beam_width, ccann::Distance<T> *dist_cmp) {
+  ccann::Parameters paras;
   paras.Set<unsigned>("L_disk", L_disk);
   paras.Set<unsigned>("R_disk", 0);
   paras.Set<float>("alpha_disk", 1.2);
@@ -268,17 +268,17 @@ void update(const std::string &data_bin, const unsigned L_disk, int step, const 
   std::vector<T> data_load;
   size_t dim{}, aligned_dim{};
 
-  pipeann::Timer timer;
+  ccann::Timer timer;
 
   std::cout << "Loading queries " << std::endl;
   T *query = NULL;
   size_t query_num, query_dim, query_aligned_dim;
-  pipeann::load_aligned_bin<T>(query_file, query, query_num, query_dim, query_aligned_dim);
+  ccann::load_aligned_bin<T>(query_file, query, query_num, query_dim, query_aligned_dim);
 
   dim = query_dim;
   aligned_dim = query_aligned_dim;
-  pipeann::Metric metric = pipeann::Metric::L2;
-  pipeann::DynamicSSDIndex<T, TagT> sync_index(paras, save_path, save_path + "_merge", dist_cmp, metric);
+  ccann::Metric metric = ccann::Metric::L2;
+  ccann::DynamicSSDIndex<T, TagT> sync_index(paras, save_path, save_path + "_merge", dist_cmp, metric);
 
   std::cout << "Searching before inserts: " << std::endl;
 
@@ -411,15 +411,15 @@ int main(int argc, char **argv) {
   unsigned nodes_to_cache = 0;
 
   if (std::string(argv[1]) == std::string("int8")) {
-    pipeann::DistanceL2Int8 dist_cmp;
+    ccann::DistanceL2Int8 dist_cmp;
     update<int8_t, unsigned>(data_bin, L_disk, step, nodes_to_cache, save_path, query_file, truthset, recall_at,
                              Lsearch, beam_width, &dist_cmp);
   } else if (std::string(argv[1]) == std::string("uint8")) {
-    pipeann::DistanceL2UInt8 dist_cmp;
+    ccann::DistanceL2UInt8 dist_cmp;
     update<uint8_t, unsigned>(data_bin, L_disk, step, nodes_to_cache, save_path, query_file, truthset, recall_at,
                               Lsearch, beam_width, &dist_cmp);
   } else if (std::string(argv[1]) == std::string("float")) {
-    pipeann::DistanceL2 dist_cmp;
+    ccann::DistanceL2 dist_cmp;
     update<float, unsigned>(data_bin, L_disk, step, nodes_to_cache, save_path, query_file, truthset, recall_at, Lsearch,
                             beam_width, &dist_cmp);
   } else

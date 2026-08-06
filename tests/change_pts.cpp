@@ -19,7 +19,7 @@ void convert(char *path, uint64_t to_pts) {
   LOG(INFO) << "Num points: " << num_points << " Dim: " << dim << " To pts: " << to_pts;
   T *data = new T[to_pts * dim];
   reader.read((char *) data, to_pts * dim * sizeof(T));
-  pipeann::save_bin<T>((std::string(path) + std::to_string(to_pts)).c_str(), data, to_pts, dim);
+  ccann::save_bin<T>((std::string(path) + std::to_string(to_pts)).c_str(), data, to_pts, dim);
 }
 
 int main(int argc, char **argv) {

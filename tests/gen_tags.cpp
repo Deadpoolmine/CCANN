@@ -33,9 +33,9 @@ void gen_tags(char *base_data_file, char *index, bool sector_aligned) {
   }
   LOG(INFO) << "Saving tags to " << tag_file;
   if (sector_aligned) {
-    pipeann::save_bin_sector_aligned<TagT>((tag_file + ".aligned").c_str(), tags, num_points, 1);
+    ccann::save_bin_sector_aligned<TagT>((tag_file + ".aligned").c_str(), tags, num_points, 1);
   } else {
-    pipeann::save_bin<TagT>(tag_file.c_str(), tags, num_points, 1);
+    ccann::save_bin<TagT>(tag_file.c_str(), tags, num_points, 1);
   }
 }
 

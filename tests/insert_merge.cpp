@@ -32,7 +32,7 @@ int NUM_SEARCH_THREADS = 32;
 int search_mode = PARA_SEARCH;
 
 int begin_time = 0;
-pipeann::Timer globalTimer;
+ccann::Timer globalTimer;
 
 // acutually also shows disk size
 void ShowMemoryStatus(const std::string &filename) {
@@ -55,15 +55,15 @@ void ShowMemoryStatus(const std::string &filename) {
 }
 
 template<typename T, typename TagT>
-void merge_kernel(pipeann::DynamicSSDIndex<T, TagT> &sync_index) {
+void merge_kernel(ccann::DynamicSSDIndex<T, TagT> &sync_index) {
   // use either fixed number of threads or num search threads.
   sync_index.final_merge(8);
 }
 
 template<typename T, typename TagT>
-float insertion_kernel(T *data_load, pipeann::DynamicSSDIndex<T, TagT> &sync_index, std::vector<TagT> &insert_vec,
+float insertion_kernel(T *data_load, ccann::DynamicSSDIndex<T, TagT> &sync_index, std::vector<TagT> &insert_vec,
                        size_t dim, unsigned merge_interval, unsigned &counter) {
-  pipeann::Timer timer;
+  ccann::Timer timer;
   size_t npts = insert_vec.size();
   std::vector<double> insert_latencies(npts, 0);
   LOG(INFO) << "Begin Insert";
@@ -71,7 +71,7 @@ float insertion_kernel(T *data_load, pipeann::DynamicSSDIndex<T, TagT> &sync_ind
 
 #pragma omp parallel for num_threads(1)
   for (_s64 i = 0; i < (_s64) insert_vec.size(); i++) {
-    pipeann::Timer insert_timer;
+    ccann::Timer insert_timer;
     sync_index.insert(data_load + dim * i, insert_vec[i]);
     success++;
     insert_latencies[i] = ((double) insert_timer.elapsed());
@@ -129,9 +129,9 @@ void get_trace(std::string data_bin, uint64_t l_start, uint64_t r_start, uint64_
 
 template<typename T, typename TagT>
 void update(const std::string &data_bin, const unsigned L_disk, int vecs_per_step, int num_steps,
-            const std::string &index_prefix, const unsigned beam_width, pipeann::Distance<T> *dist_cmp,
+            const std::string &index_prefix, const unsigned beam_width, ccann::Distance<T> *dist_cmp,
             unsigned merge_interval) {
-  pipeann::Parameters paras;
+  ccann::Parameters paras;
   paras.Set<unsigned>("L_disk", L_disk);
   paras.Set<unsigned>("R_disk", 0);
   paras.Set<float>("alpha_disk", 1.2);
@@ -142,10 +142,10 @@ void update(const std::string &data_bin, const unsigned L_disk, int vecs_per_ste
   std::vector<T> data_load;
   size_t dim{};
 
-  pipeann::Timer timer;
+  ccann::Timer timer;
 
-  pipeann::Metric metric = pipeann::Metric::L2;
-  pipeann::DynamicSSDIndex<T, TagT> sync_index(paras, index_prefix, index_prefix + "_merge", dist_cmp, metric,
+  ccann::Metric metric = ccann::Metric::L2;
+  ccann::DynamicSSDIndex<T, TagT> sync_index(paras, index_prefix, index_prefix + "_merge", dist_cmp, metric,
                                                search_mode, false);
 
   uint64_t res = 0;
@@ -242,15 +242,15 @@ int main(int argc, char **argv) {
   }
 
   if (std::string(argv[1]) == std::string("int8")) {
-    pipeann::DistanceL2Int8 dist_cmp;
+    ccann::DistanceL2Int8 dist_cmp;
     update<int8_t, unsigned>(data_bin, L_disk, vecs_per_step, num_steps, index_prefix, beam_width, &dist_cmp,
                              merge_interval);
   } else if (std::string(argv[1]) == std::string("uint8")) {
-    pipeann::DistanceL2UInt8 dist_cmp;
+    ccann::DistanceL2UInt8 dist_cmp;
     update<uint8_t, unsigned>(data_bin, L_disk, vecs_per_step, num_steps, index_prefix, beam_width, &dist_cmp,
                               merge_interval);
   } else if (std::string(argv[1]) == std::string("float")) {
-    pipeann::DistanceL2 dist_cmp;
+    ccann::DistanceL2 dist_cmp;
     update<float, unsigned>(data_bin, L_disk, vecs_per_step, num_steps, index_prefix, beam_width, &dist_cmp,
                             merge_interval);
   } else

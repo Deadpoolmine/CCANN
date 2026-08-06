@@ -36,9 +36,9 @@ int search_memory_index(int argc, char **argv) {
   _u32 num_threads = (_u32) std::atoi(argv[arg_no++]);
   std::string distance_metric(argv[arg_no++]);
 
-  pipeann::Metric m = (distance_metric == "cosine" ? pipeann::Metric::COSINE : pipeann::Metric::L2);
+  ccann::Metric m = (distance_metric == "cosine" ? ccann::Metric::COSINE : ccann::Metric::L2);
 
-  if (distance_metric != "l2" && m == pipeann::Metric::L2) {
+  if (distance_metric != "l2" && m == ccann::Metric::L2) {
     std::cout << "Not processing metric: '" << distance_metric << "'. Setting to default (L2)" << std::endl;
   }
 
@@ -60,13 +60,13 @@ int search_memory_index(int argc, char **argv) {
             << " is single file: " << single_index_file << " query file: " << query_bin
             << " truthset file: " << truthset_bin << " K: " << recall_at << " num threads: " << num_threads
             << " save prefix: " << result_output_prefix
-            << " similarity metric: " << (m == pipeann::Metric::COSINE ? "cosine" : "l2") << " first L: " << Lvec[0]
+            << " similarity metric: " << (m == ccann::Metric::COSINE ? "cosine" : "l2") << " first L: " << Lvec[0]
             << std::endl;
 
-  pipeann::load_aligned_bin<T>(query_bin, query, query_num, query_dim, query_aligned_dim);
+  ccann::load_aligned_bin<T>(query_bin, query, query_num, query_dim, query_aligned_dim);
 
   if (file_exists(truthset_bin)) {
-    pipeann::load_truthset(truthset_bin, gt_ids, gt_dists, gt_num, gt_dim, &gt_tags);
+    ccann::load_truthset(truthset_bin, gt_ids, gt_dists, gt_num, gt_dim, &gt_tags);
     if (gt_num != query_num) {
       std::cout << "Error. Mismatch in number of queries and ground truth data" << std::endl;
     }
@@ -76,7 +76,7 @@ int search_memory_index(int argc, char **argv) {
   std::cout.setf(std::ios_base::fixed, std::ios_base::floatfield);
   std::cout.precision(2);
 
-  pipeann::Index<T, uint32_t> index(m, query_dim, max_points, dynamic_index, single_index_file, dynamic_index);
+  ccann::Index<T, uint32_t> index(m, query_dim, max_points, dynamic_index, single_index_file, dynamic_index);
   index.load(memory_index_file.c_str());
 
   tsl::robin_set<uint32_t> active_tags;
@@ -84,7 +84,7 @@ int search_memory_index(int argc, char **argv) {
 
   std::cout << "Index loaded" << std::endl;
 
-  pipeann::Parameters paras;
+  ccann::Parameters paras;
   std::string recall_string = "Recall@" + std::to_string(recall_at);
   std::cout << std::setw(4) << "Ls" << std::setw(12) << "QPS " << std::setw(18) << "Mean Latency (ms)" << std::setw(15)
             << "99.9 Latency" << std::setw(12) << recall_string << std::endl;
@@ -128,7 +128,7 @@ int search_memory_index(int argc, char **argv) {
     float recall = 0;
     if (calc_recall_flag)
 
-      recall = (float) pipeann::calculate_recall((_u32) query_num, gt_tags, gt_dists, (_u32) gt_dim,
+      recall = (float) ccann::calculate_recall((_u32) query_num, gt_tags, gt_dists, (_u32) gt_dim,
                                                  query_result_ids[test_id].data(), (_u32) recall_at, (_u32) recall_at,
                                                  active_tags);
 
@@ -148,11 +148,11 @@ int search_memory_index(int argc, char **argv) {
 
   for (auto L : Lvec) {
     std::string cur_result_path = result_output_prefix + "_" + std::to_string(L) + "_idx_uint32.bin";
-    pipeann::save_bin<_u32>(cur_result_path, query_result_ids[test_id].data(), query_num, recall_at);
+    ccann::save_bin<_u32>(cur_result_path, query_result_ids[test_id].data(), query_num, recall_at);
     test_id++;
   }
 
-  pipeann::aligned_free(query);
+  ccann::aligned_free(query);
   return 0;
 }
 

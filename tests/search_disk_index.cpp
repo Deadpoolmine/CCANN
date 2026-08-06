@@ -54,8 +54,8 @@ int search_disk_index(int argc, char **argv) {
   bool use_page_search = search_mode != 0;
   _u32 mem_L = std::atoi(argv[index++]);
 
-  pipeann::Metric m = dist_metric == "cosine" ? pipeann::Metric::COSINE : pipeann::Metric::L2;
-  if (dist_metric != "l2" && m == pipeann::Metric::L2) {
+  ccann::Metric m = dist_metric == "cosine" ? ccann::Metric::COSINE : ccann::Metric::L2;
+  if (dist_metric != "l2" && m == ccann::Metric::L2) {
     std::cout << "Unknown distance metric: " << dist_metric << ". Using default(L2) instead." << std::endl;
   }
 
@@ -80,11 +80,11 @@ int search_disk_index(int argc, char **argv) {
   else
     std::cout << " beamwidth: " << beamwidth << std::endl;
 
-  pipeann::load_bin<T>(query_bin, query, query_num, query_dim);
+  ccann::load_bin<T>(query_bin, query, query_num, query_dim);
   // std::load_aligned_bin<T>(query_bin, query, query_num, query_dim, query_aligned_dim);
 
   if (file_exists(truthset_bin)) {
-    pipeann::load_truthset(truthset_bin, gt_ids, gt_dists, gt_num, gt_dim, &tags);
+    ccann::load_truthset(truthset_bin, gt_ids, gt_dists, gt_num, gt_dim, &tags);
     if (gt_num != query_num) {
       std::cout << "Error. Mismatch in number of queries and ground truth data" << std::endl;
     }
@@ -101,7 +101,7 @@ int search_disk_index(int argc, char **argv) {
   tags_writer.reset(new LinuxAlignedFileReader());
   id2loc_writer.reset(new LinuxAlignedFileReader());
 
-  std::unique_ptr<pipeann::SSDIndex<T>> _pFlashIndex(new pipeann::SSDIndex<T>(
+  std::unique_ptr<ccann::SSDIndex<T>> _pFlashIndex(new ccann::SSDIndex<T>(
       m, reader, pq_compressed_writer, tags_writer, id2loc_writer, SearchMode(search_mode), tags_flag));
 
   int res = _pFlashIndex->load(index_prefix_path.c_str(), num_threads, true, use_page_search);
@@ -122,7 +122,7 @@ int search_disk_index(int argc, char **argv) {
   std::vector<std::vector<float>> query_result_dists(Lvec.size());
 
   auto run_tests = [&](uint32_t test_id, bool output) {
-    pipeann::QueryStats *stats = new pipeann::QueryStats[query_num];
+    ccann::QueryStats *stats = new ccann::QueryStats[query_num];
     _u64 L = Lvec[test_id];
 
     query_result_ids[test_id].resize(recall_at * query_num);
@@ -184,20 +184,20 @@ int search_disk_index(int argc, char **argv) {
     std::chrono::duration<double> diff = e - s;
     float qps = (float) ((1.0 * (double) query_num) / (1.0 * (double) diff.count()));
 
-    pipeann::convert_types<uint32_t, uint32_t>(query_result_tags_32.data(), query_result_tags[test_id].data(),
+    ccann::convert_types<uint32_t, uint32_t>(query_result_tags_32.data(), query_result_tags[test_id].data(),
                                                (size_t) query_num, (size_t) recall_at);
 
-    float mean_latency = (float) pipeann::get_mean_stats(
-        stats, query_num, [](const pipeann::QueryStats &stats) { return stats.total_us; });
+    float mean_latency = (float) ccann::get_mean_stats(
+        stats, query_num, [](const ccann::QueryStats &stats) { return stats.total_us; });
 
-    float latency_999 = (float) pipeann::get_percentile_stats(
-        stats, query_num, 0.999f, [](const pipeann::QueryStats &stats) { return stats.total_us; });
+    float latency_999 = (float) ccann::get_percentile_stats(
+        stats, query_num, 0.999f, [](const ccann::QueryStats &stats) { return stats.total_us; });
 
-    float mean_hops = (float) pipeann::get_mean_stats(stats, query_num,
-                                                      [](const pipeann::QueryStats &stats) { return stats.n_hops; });
+    float mean_hops = (float) ccann::get_mean_stats(stats, query_num,
+                                                      [](const ccann::QueryStats &stats) { return stats.n_hops; });
 
     float mean_ios =
-        (float) pipeann::get_mean_stats(stats, query_num, [](const pipeann::QueryStats &stats) { return stats.n_ios; });
+        (float) ccann::get_mean_stats(stats, query_num, [](const ccann::QueryStats &stats) { return stats.n_ios; });
 
     delete[] stats;
 
@@ -207,7 +207,7 @@ int search_disk_index(int argc, char **argv) {
         /* Attention: in SPACEV, there may be multiple vectors with the same distance,
           which may cause lower than expected recall@1 (?) */
         recall =
-            (float) pipeann::calculate_recall((_u32) query_num, gt_ids, gt_dists, (_u32) gt_dim,
+            (float) ccann::calculate_recall((_u32) query_num, gt_ids, gt_dists, (_u32) gt_dim,
                                               query_result_tags[test_id].data(), (_u32) recall_at, (_u32) recall_at);
       }
 

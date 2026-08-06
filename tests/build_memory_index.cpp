@@ -9,8 +9,8 @@
 template<typename T>
 int build_in_memory_index(const std::string &data_path, const std::string &tags_file, const unsigned R,
                           const unsigned L, const float alpha, const std::string &save_path, const unsigned num_threads,
-                          bool dynamic_index, bool single_file_index, pipeann::Metric distMetric) {
-  pipeann::Parameters paras;
+                          bool dynamic_index, bool single_file_index, ccann::Metric distMetric) {
+  ccann::Parameters paras;
   paras.Set<unsigned>("R", R);
   paras.Set<unsigned>("L", L);
   paras.Set<unsigned>("C", 750);  // maximum candidate set size during pruning procedure
@@ -19,15 +19,15 @@ int build_in_memory_index(const std::string &data_path, const std::string &tags_
   paras.Set<unsigned>("num_threads", num_threads);
 
   _u64 data_num, data_dim;
-  pipeann::get_bin_metadata(data_path, data_num, data_dim);
+  ccann::get_bin_metadata(data_path, data_num, data_dim);
   std::cout << "Building in-memory index with parameters: data_file: " << data_path << "tags file: " << tags_file
             << " R: " << R << " L: " << L << " alpha: " << alpha << " index_path: " << save_path
             << " #threads: " << num_threads
-            << ", using distance metric: " << (distMetric == pipeann::Metric::COSINE ? "cosine " : "l2 ");
+            << ", using distance metric: " << (distMetric == ccann::Metric::COSINE ? "cosine " : "l2 ");
 
   typedef uint32_t TagT;
 
-  pipeann::Index<T, TagT> index(distMetric, data_dim, data_num, dynamic_index, single_file_index,
+  ccann::Index<T, TagT> index(distMetric, data_dim, data_num, dynamic_index, single_file_index,
                                 true);  // enable_tags forced to true!
   if (dynamic_index) {
     // Dynamic index should also have tags.
@@ -92,11 +92,11 @@ int main(int argc, char **argv) {
   const float alpha = (float) atof(argv[arg_no++]);
   const unsigned num_threads = (unsigned) atoi(argv[arg_no++]);
   const std::string dist_metric_str = argv[arg_no++];
-  enum pipeann::Metric distMetric = dist_metric_str == "cosine"
-                                        ? pipeann::Metric::COSINE
-                                        : pipeann::Metric::L2;  // set to l2 even if something else is chosen
+  enum ccann::Metric distMetric = dist_metric_str == "cosine"
+                                        ? ccann::Metric::COSINE
+                                        : ccann::Metric::L2;  // set to l2 even if something else is chosen
 
-  if (dist_metric_str != "l2" && distMetric == pipeann::Metric::L2) {
+  if (dist_metric_str != "l2" && distMetric == ccann::Metric::L2) {
     std::cerr << "Unknown distance metric " << argv[argc - 1] << ". Setting metric to L2" << std::endl;
   }
 

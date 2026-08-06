@@ -54,11 +54,8 @@ target_link_libraries(search ${PROJECT_NAME} )
 add_executable(search_non_existence search_non_existence.cpp)
 target_link_libraries(search_non_existence ${PROJECT_NAME} )
 
-add_executable(distribute_search distribute_search.cpp)
-target_link_libraries(distribute_search ${PROJECT_NAME} )
-
 add_executable(insert_merge insert_merge.cpp)
 target_link_libraries(insert_merge ${PROJECT_NAME} )
 
-add_executable(distribute_test_insert_search distribute_test_insert_search.cpp)
-target_link_libraries(distribute_test_insert_search ${PROJECT_NAME} )
+add_executable(quick_start quick_start.cpp)
+target_link_libraries(quick_start ${PROJECT_NAME})
