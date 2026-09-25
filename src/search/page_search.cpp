@@ -69,7 +69,6 @@ namespace ccann {
     } else {
       LOG(INFO) << partition_file << " does not exist, use equal partition mapping";
 // use equal mapping for id2loc and page_layout.
-#ifndef NO_MAPPING
 #pragma omp parallel for
       for (size_t i = 0; i < this->num_points; ++i) {
         id2loc_.insert_or_assign(i, i);
@@ -94,7 +93,6 @@ namespace ccann {
       if (num_points % nnodes_per_sector != 0) {
         cur_loc += nnodes_per_sector - (num_points % nnodes_per_sector);
       }
-#endif
     }
     LOG(INFO) << "Cur location: " << this->cur_loc;
     LOG(INFO) << "Page layout loaded.";

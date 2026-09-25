@@ -59,9 +59,7 @@ static inline bool file_exists(const std::string &name, bool dirCheck = false) {
   struct stat buffer;
   val = stat(name.c_str(), &buffer);
 
-#ifndef ODIN_ANN_IMMEDIATE_NO_CC
   LOG(INFO) << " Stat(" << name.c_str() << ") returned: " << val;
-#endif
 
   if (val != 0) {
     switch (errno) {

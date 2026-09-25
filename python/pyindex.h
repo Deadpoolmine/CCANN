@@ -237,9 +237,7 @@ class PyIndex : public BasePyIndex {
 
     if (this->deleted_nodes_.size() == 0) {
 // directly save the memory index is OK.
-#ifndef IN_PLACE_RECORD_UPDATE
       static_assert(false, "Require storing page layout.");
-#endif
       if (use_disk_index_) {
         disk_index_->write_metadata_and_pq(cur_index_prefix_, cur_index_prefix_, disk_index_->num_points,
                                            disk_index_->medoids[0]);

@@ -220,9 +220,7 @@ namespace ccann {
     if (load_flag) {
       this->destroy_thread_data();
       reader->close();
-#ifndef ANN_LARGE
       pq_compressed_writer->close();
-#endif
       id2loc_writer->close();
       if (enable_tags) {
         tags_writer->close();
@@ -251,7 +249,6 @@ namespace ccann {
       thread_pq_bufs.push_back(thread_pq_buf);
     }
 
-#ifndef READ_ONLY_TESTS
     // background thread.
     LOG(INFO) << "Setup " << kBgIOThreads << " background I/O threads for insert...";
     for (int i = 0; i < kBgIOThreads; ++i) {
@@ -260,7 +257,6 @@ namespace ccann {
 
     LOG(INFO) << "Setup commit thread for insert...";
     commit_thread_ = new std::thread(&SSDIndex<T, TagT>::insert_commit_thread, this);
-#endif
     load_flag = true;
   }
 
@@ -423,25 +419,12 @@ namespace ccann {
     std::string id2loc_file(disk_index_file + ".id2loc");
     std::string tags_file(disk_index_file + ".tags");
 
-#ifdef ANN_LARGE
-    // delete pq_compressed_vectors;  
-    // save storage
-    // TODO: Remove once ready
-    std::filesystem::remove(pq_compressed_vectors);
-#endif
 
-#ifdef ISS_OPT
-    // Check 1000 points before the end
-    ckpt_id = num_points - 1000;
-#else
     ckpt_id = 0;
-#endif
 
     reader->open(index_fname, true, false);
 
-#ifndef ANN_LARGE
     pq_compressed_writer->open(pq_compressed_file, true, false);
-#endif
 
     id2loc_writer->open(id2loc_file, true, false);
     if (this->enable_tags) {
@@ -455,10 +438,8 @@ namespace ccann {
       LOG(INFO) << "Mapping " << index_pre_map_size << " bytes of SSD index file.";
       reader->init_dax(index_pre_map_size);
 
-#ifndef ANN_LARGE
       auto pq_pre_map_size = pq_compressed_writer->file_size();
       pq_compressed_writer->init_dax(pq_pre_map_size);
-#endif
 
       auto id2loc_pre_map_size = id2loc_writer->file_size();
       LOG(INFO) << "Mapping " << id2loc_pre_map_size << " bytes of SSD id2loc file.";
@@ -505,265 +486,7 @@ namespace ccann {
 
     // load page layout and set cur_loc
     this->use_page_search_ = use_page_search;
-    if (this->on_pm) {
-#ifdef PM_RECOVERY
-      if (std::filesystem::exists(id2loc_file)) {
-        libcuckoo::cuckoohash_map<uint32_t, uint32_t> loc2id;
-        // load from id2loc file
-        auto size = get_file_size(id2loc_file);
-        _u32 potential_ids = size / sizeof(uint32_t);
-        auto addr = id2loc_writer->get_dax(size, false);
-        _u64 num_points = 0;
-        _u32 max_id = 0;
-        _u32 max_loc = 0;
-        for (_u32 id = 0; id < potential_ids; id++) {
-          _u32 loc = *((_u32 *) addr + id);
-          // FIXME: how to identify loc 0?
-          if (id == 0) {
-            this->id2loc_.insert_or_assign(id, loc);
-            loc2id.insert_or_assign(loc, id);
-            num_points++;
-            max_id = id;
-          } else {
-            if (loc != 0) {
-              this->id2loc_.insert_or_assign(id, loc);
-              loc2id.insert_or_assign(loc, id);
-              num_points++;
-              max_id = id;
-            }
-          }
-          if (loc > max_loc) {
-            max_loc = loc;
-          }
-        }
-
-        LOG(INFO) << "Loaded ID2LOC from file: " << id2loc_file << ", #valid_points: " << num_points
-                  << ", max_id: " << max_id << ", max_loc: " << max_loc;
-
-        id2loc_writer->put_dax();
-
-        uint64_t page_offset = loc_sector_no(0);
-        uint64_t num_sectors = (num_points + nnodes_per_sector - 1) / nnodes_per_sector;
-
-#pragma omp parallel for
-        for (size_t i = 0; i < num_sectors; ++i) {
-          PageArr tmp_arr;
-          for (uint32_t j = 0; j < nnodes_per_sector; ++j) {
-            uint32_t loc = i * nnodes_per_sector + j;
-            uint32_t id;
-            if (loc2id.contains(loc))
-              id = loc2id.find(loc);
-            else
-              id = kInvalidID;
-            tmp_arr[j] = id;
-          }
-          for (uint32_t j = nnodes_per_sector; j < tmp_arr.size(); ++j) {
-            tmp_arr[j] = kInvalidID;
-          }
-          this->page_layout.insert(i + page_offset, tmp_arr);
-        }
-        this->cur_loc = max_loc + 1;
-        if (this->cur_loc % nnodes_per_sector != 0) {
-          this->cur_loc += nnodes_per_sector - (this->cur_loc % nnodes_per_sector);
-        }
-        this->num_points = num_points;
-        this->cur_id = max_id + 1;
-        LOG(INFO) << "Page Allocator Restored from ID2LOC file. cur_loc: " << this->cur_loc
-                  << ", num_points: " << this->num_points << ", cur_id: " << this->cur_id;
-        // check from [ckpt_id, max_id]
-        char sector_buf[SECTOR_LEN];
-        char nbr_sector_buf[SECTOR_LEN];
-        LOG(INFO) << "Start to check and fix index from ID " << ckpt_id << " to " << max_id;
-        std::vector<uint64_t> hint_pages;
-        for (_u32 id = ckpt_id; id <= max_id; id++) {
-          if (id % 10000 == 0) {
-            LOG(INFO) << "  Checking ID " << id << ", progress: " << 100.0 * (id - ckpt_id) / (max_id - ckpt_id) << "%";
-          }
-          auto loc = id2loc(id);
-          // FIX all neighbors
-          auto sector = loc_sector_no(loc);
-          // read sector
-          auto graph_size = get_file_size(disk_index_file);
-          auto graph_addr = reader->get_dax(graph_size, false);
-          memcpy(sector_buf, (char *) graph_addr + sector * SECTOR_LEN, SECTOR_LEN);
-          auto node_buf = offset_to_loc(sector_buf, loc);
-          DiskNode<T> node(id, offset_to_node_coords(node_buf), offset_to_node_nhood(node_buf));
-          auto nnbrs = node.nnbrs;
-          auto nbrs = node.nbrs;
-          // recalc PQ coords and write to pq_compressed_file
-          auto pq_coords = this->deflate_vector(node.coords);
-          reader->put_dax();
-
-#ifndef ANN_LARGE
-          auto pq_file_size = ROUND_UP((id + 1) * this->n_chunks * sizeof(_u8), SECTOR_LEN);
-          auto pq_file_addr = pq_compressed_writer->get_dax(pq_file_size, false);
-          auto target_pq_addr = pq_file_addr + id * this->n_chunks * sizeof(_u8);
-          memcpy((char *) target_pq_addr, (char *) pq_coords.data(), pq_coords.size());
-          pq_compressed_writer->flush_dax(target_pq_addr, pq_coords.size());
-          pq_compressed_writer->barrier_dax();
-          pq_compressed_writer->put_dax();
-#endif
-          // pq_compressed_writer->write((char *) pq_coords.data(), pq_coords.size(), id * this->n_chunks *
-          // sizeof(_u8));
-
-          std::set<uint64_t> pages_need_to_read;  // useless for PM
-          auto new_locs = this->alloc_loc_compact(nnbrs, hint_pages, pages_need_to_read);
-
-          uint64_t new_max_loc = 0;
-          uint64_t extend_fsize = 0;
-          for (auto new_loc : new_locs) {
-            if (new_loc > new_max_loc)
-              new_max_loc = new_loc;
-          }
-          extend_fsize = loc_sector_no(new_max_loc) * SECTOR_LEN + SECTOR_LEN;
-          extend_fsize = extend_fsize > graph_size ? extend_fsize : graph_size;
-
-          graph_addr = reader->get_dax(extend_fsize, false);
-
-          // LOG(INFO) << "Checking neighbors of ID " << id << ", nnbrs: " << nnbrs;
-          // Check and fix all neighbors
-          for (uint32_t n = 0; n < nnbrs; n++) {
-            uint32_t neighbor_id = nbrs[n];
-            auto neighbor_loc = id2loc(neighbor_id);
-            // LOG(INFO) << "  Checking neighbor ID " << neighbor_id << " at loc " << neighbor_loc;
-            // read neighbor node
-            auto neighbor_sector = loc_sector_no(neighbor_loc);
-            memcpy(nbr_sector_buf, (char *) graph_addr + neighbor_sector * SECTOR_LEN, SECTOR_LEN);
-            auto neighbor_node_buf = offset_to_loc(nbr_sector_buf, neighbor_loc);
-            DiskNode<T> neighbor_node(neighbor_id, offset_to_node_coords(neighbor_node_buf),
-                                      offset_to_node_nhood(neighbor_node_buf));
-            // add id if not exist
-            std::vector<uint32_t> nhood;
-            bool exist = false;
-            for (uint32_t m = 0; m < neighbor_node.nnbrs; m++) {
-              if (neighbor_node.nbrs[m] == id) {
-                exist = true;
-              }
-              nhood.push_back(neighbor_node.nbrs[m]);
-            }
-            if (!exist) {
-              nhood.push_back(id);
-            }
-            // Re-prune neighbor
-            if (nhood.size() > this->range) {
-              // Batch Prune
-              QueryBuffer<T> *read_data = this->pop_query_buf(nullptr);
-
-              auto &thread_pq_buf = read_data->aligned_pq_coord_scratch;
-              std::vector<float> tgt_dists(nhood.size(), 0.0f), nbr_dists(nhood.size(), 0.0f);
-              std::vector<float> tgt_dists_batch(PRUNE_BATCH_SIZE, 0.0f), nbr_dists_batch(PRUNE_BATCH_SIZE, 0.0f);
-              auto target_id = id;
-
-              bool pruned = false;
-              float tgt_nbr_dis = 0;
-              compute_pq_dists(target_id, &neighbor_node.id, &tgt_nbr_dis, 1, thread_pq_buf);
-
-              for (size_t k = 0; k < nhood.size(); k += PRUNE_BATCH_SIZE) {
-                size_t bsize = std::min((size_t) PRUNE_BATCH_SIZE, nhood.size() - k);
-                ANN_START_TIMING(prune_neighbor_time, prune_neighbor_t);
-                compute_pq_dists(target_id, nhood.data() + k, tgt_dists_batch.data(), (_u32) bsize, thread_pq_buf);
-                compute_pq_dists(neighbor_node.id, nhood.data() + k, nbr_dists_batch.data(), (_u32) bsize,
-                                 thread_pq_buf);
-                ANN_END_TIMING(prune_neighbor_time, prune_neighbor_t);
-
-                std::vector<TriangleNeighbor> tri_pool(PRUNE_BATCH_SIZE);
-
-                for (size_t j = 0; j < PRUNE_BATCH_SIZE; j++) {
-                  tri_pool[j].id = nhood[k + j];
-                  tri_pool[j].tgt_dis = tgt_dists_batch[j];
-                  tri_pool[j].distance = nbr_dists_batch[j];
-                }
-                std::sort(tri_pool.begin(), tri_pool.end());
-
-                int to_evict = -1;
-                pruned = this->fast_delta_prune_neighbors_pq(tri_pool, to_evict, tgt_nbr_dis);
-                if (to_evict != -1) {
-                  if ((uint32_t) to_evict != this->range) {
-                    nhood.erase(nhood.begin() + k + to_evict);
-                  } else {
-                    // remove target node
-                    nhood.pop_back();
-                  }
-                  break;
-                }
-
-                // assign to the full buffer
-                for (size_t j = 0; j < bsize; ++j) {
-                  tgt_dists[k + j] = tgt_dists_batch[j];
-                  nbr_dists[k + j] = nbr_dists_batch[j];
-                }
-              }
-
-              if (!pruned) {
-                // full prune
-                std::vector<TriangleNeighbor> tri_pool(nhood.size());
-
-                for (uint32_t k = 0; k < nhood.size(); k++) {
-                  tri_pool[k].id = nhood[k];
-                  tri_pool[k].tgt_dis = tgt_dists[k];
-                  tri_pool[k].distance = nbr_dists[k];
-                }
-                std::sort(tri_pool.begin(), tri_pool.end());
-
-                int tgt_idx = -1;
-                for (int k = 0; k < (int) nhood.size(); ++k) {
-                  if (tri_pool[k].id == target_id) {
-                    tgt_idx = k;
-                    break;
-                  }
-                }
-                if (unlikely(tgt_idx == -1)) {
-                  LOG(ERROR) << "Target ID " << target_id << " not found in tri_pool";
-                  exit(-1);
-                }
-                this->slow_delta_prune_neighbors_pq(tri_pool, nhood, thread_pq_buf, tgt_idx);
-              }
-              this->push_query_buf(read_data);
-            }
-
-            // rewrite neighbor node
-            auto w_sector = loc_sector_no(new_locs[n]);
-            char *pm_sec = (static_cast<char *>(graph_addr) + w_sector * SECTOR_LEN);
-            char *pm_node = offset_to_loc(pm_sec, new_locs[n]);
-            DiskNode<T> w_nbr_node_pm(id, offset_to_node_coords(pm_node), offset_to_node_nhood(pm_node));
-            w_nbr_node_pm.nnbrs = (_u32) nhood.size();
-            *(w_nbr_node_pm.nbrs - 1) = (_u32) nhood.size();  // write to buf
-            memcpy(w_nbr_node_pm.coords, neighbor_node.coords, data_dim * sizeof(T));
-            memcpy(w_nbr_node_pm.nbrs, nhood.data(), w_nbr_node_pm.nnbrs * sizeof(uint32_t));
-            auto node_len = data_dim * sizeof(T) + nhood.size() * sizeof(uint32_t);
-            reader->flush_dax(pm_node, node_len);
-            reader->barrier_dax();
-          }
-
-          // Fix id2loc
-          std::vector<uint64_t> orig_locs;
-          std::vector<uint32_t> new_ids;
-          for (uint32_t i = 0; i < nnbrs; ++i) {
-            auto orig_loc = id2loc(nbrs[i]);
-            orig_locs.emplace_back(id2loc(nbrs[i]));
-            auto page = loc_sector_no(orig_loc);
-            // deduplication
-            hint_pages.emplace_back(page);
-
-            id2loc_.insert_or_assign(nbrs[i], new_locs[i]);
-            new_ids.emplace_back(nbrs[i]);
-          }
-
-          std::set<uint64_t> dedup_hint_pages(hint_pages.begin(), hint_pages.end());
-          hint_pages.assign(dedup_hint_pages.begin(), dedup_hint_pages.end());
-
-          erase_and_set_loc(orig_locs, new_locs, new_ids);
-          reader->put_dax();
-        }
-      } else {
-        this->load_page_layout(index_prefix, nnodes_per_sector, num_points);
-      }
-#else
-      this->load_page_layout(index_prefix, nnodes_per_sector, num_points);
-#endif
-    } else {
-      this->load_page_layout(index_prefix, nnodes_per_sector, num_points);
-    }
+    this->load_page_layout(index_prefix, nnodes_per_sector, num_points);
 
     if (this->on_pm && std::filesystem::exists(id2loc_file)) {
       auto mapping = id2loc_writer->get_dax(num_points * sizeof(uint32_t), false);
@@ -806,10 +529,6 @@ namespace ccann {
     // set ckpt_id
     this->ckpt_id = this->num_points;
 
-    // sanity check for CC_ANN
-    bool enable_cc_ann = false;
-    bool enable_journal_ann = false;
-
     // setup thread pool
     if (cpu_bound == -1) {
       this->num_cpus = std::thread::hardware_concurrency();
@@ -823,24 +542,9 @@ namespace ccann {
 
     LOG(INFO) << "Setting up async insert thread pool with " << num_cpus << " threads.";
 
-#ifdef USE_BS_THREAD_POOL
     this->insert_pool = std::make_unique<BS::thread_pool<>>(num_cpus);
-#elif USE_SMALL_THREAD_POOL
-    this->insert_pool = std::make_unique<ThreadPool>(num_cpus);
-#endif
 
-#ifdef CC_ANN
-    enable_cc_ann = true;
-#endif
 
-#ifdef J_ANN
-    enable_journal_ann = true;
-#endif
-
-    if (enable_cc_ann && enable_journal_ann) {
-      LOG(ERROR) << "Cannot enable both CC-ANN and J-ANN";
-      return -1;
-    }
 
     LOG(INFO) << "Index loaded in " << load_timer.elapsed() / (double) 1000000 << "s";
     LOG(INFO) << "SSDIndex loaded successfully.";

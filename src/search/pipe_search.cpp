@@ -19,9 +19,7 @@
 #include <unistd.h>
 #include <sys/syscall.h>
 
-#ifndef USE_AIO
 #include "liburing.h"
-#endif
 
 namespace ccann {
   struct io_t {
@@ -51,11 +49,7 @@ namespace ccann {
     uint32_t original_l_search = l_search;
     QueryBuffer<T> *query_buf = pop_query_buf(query1);
     ANN_INIT_TIMING(populate_t);
-#ifdef USE_AIO
-    void *ctx = reader->get_ctx();
-#else
     void *ctx = reader->get_ctx(IORING_SETUP_SQPOLL);  // use SQ polling only for pipe search.
-#endif
 
     this->search_thread_count_++;
 
@@ -95,9 +89,6 @@ namespace ccann {
     // query <-> PQ chunk centers distances
     float *pq_dists = query_buf->aligned_pqtable_dist_scratch;
 
-#ifndef OVERLAP_INIT
-    pq_table.populate_chunk_distances(query, pq_dists);  // overlap with the first I/O.
-#endif
 
     // lambda to batch compute query<-> node distances in PQ space
     auto compute_pq_dists = [this, pq_dists](const unsigned *ids, const _u64 n_ids, float *dists_out,
@@ -197,16 +188,11 @@ namespace ccann {
     stats->cpu_us2 = 0;
     // search in in-memory index.
 
-#ifdef DYN_PIPE_WIDTH
     int64_t cur_beam_width = 4;  // before converge.
-#else
-    int64_t cur_beam_width = beam_width;  // before converge.
-#endif
     std::vector<unsigned> mem_tags(mem_L);
     std::vector<float> mem_dists(mem_L);
 
     ANN_START_TIMING(populate_pq_dists_time, populate_t);
-#ifdef OVERLAP_INIT
     if (mem_L) {
       mem_index_->search_with_tags_fast(query, mem_L, mem_tags.data(), mem_dists.data());
       add_to_retset(mem_tags.data(), std::min((unsigned) mem_L, (unsigned) l_search), mem_dists.data());
@@ -216,17 +202,6 @@ namespace ccann {
       compute_pq_dists(&medoids[0], 1, dist_scratch, pq_coord_scratch);
       add_to_retset(&medoids[0], 1, dist_scratch);
     }
-#else
-    if (mem_L) {
-      mem_index_->search_with_tags_fast(query, mem_L, mem_tags.data(), mem_dists.data());
-      compute_pq_dists(mem_tags.data(), mem_L, dist_scratch, pq_coord_scratch);
-      add_to_retset(mem_tags.data(), std::min((_u64) mem_L, l_search), dist_scratch);
-    } else {
-      compute_pq_dists(&medoids[0], 1, dist_scratch, pq_coord_scratch);
-      add_to_retset(&medoids[0], 1, dist_scratch);
-    }
-    std::sort(retset.begin(), retset.begin() + cur_list_size);
-#endif
     ANN_END_TIMING(populate_pq_dists_time, populate_t);
 
     std::queue<io_t> on_flight_ios;
@@ -277,7 +252,6 @@ namespace ccann {
       auto buf = sector_scratch + cur_buf_idx * size_per_io;
       auto &req = query_buf->reqs[cur_buf_idx];
       unsigned loc = 0;
-#ifdef FINE_GRAINED_CONCURRENCY
       // This is CCANN-improved
       if (this->on_pm) {
         loc = id2loc_func(item.id, [&](uint32_t &loc) {
@@ -294,25 +268,6 @@ namespace ccann {
         LOG(ERROR) << "Fine grained concurrency is only supported for PM index.";
         crash();
       }
-#else
-      loc = id2loc(item.id);
-      pid = loc_sector_no(loc);
-      this->lock_idx(idx_lock_table, item.id, std::vector<uint32_t>(), true);
-      req = IORequest(static_cast<_u64>(pid) * SECTOR_LEN, size_per_io, buf, u_loc_offset(loc), max_node_len);
-
-      ANN_START_TIMING(send_best_node_time, send_best_t);
-      reader->send_read_no_alloc(req, ctx);
-      ANN_ADD_STAT(send_best_node_number, 1);
-      ANN_END_TIMING(send_best_node_time, send_best_t);
-
-#ifndef PIPE_PM_READS
-      if (this->on_pm) {
-        // for PM index, unlock immediately.
-        this->unlock_idx(idx_lock_table, item.id);
-      }
-#endif
-
-#endif
       if (passthrough_page_ref != nullptr)
         passthrough_page_ref->push_back((static_cast<_u64>(pid) * SECTOR_LEN) / SECTOR_LEN);
       on_flight_ios.push(io_t{item, pid, loc, &req});
@@ -341,15 +296,11 @@ namespace ccann {
         id_buf_map.insert(std::make_pair(io.nbr.id, offset_to_loc((char *) io.read_req->buf, io.loc)));
         io.nbr.distance <= retset[cur_list_size - 1].distance ? ++n_in : ++n_out;
 
-#ifndef PIPE_PM_READS
         // unlock the corresponding page.
         if (!this->on_pm) {
           // enable async only for SSD index.
           this->unlock_idx(idx_lock_table, io.nbr.id);
         }
-#else
-        this->unlock_idx(idx_lock_table, io.nbr.id);
-#endif
 
         on_flight_ios.pop();
         // LOG(INFO) << "Unlocked node " << io.nbr.id << " in thread " << syscall(SYS_gettid);
@@ -459,7 +410,6 @@ namespace ccann {
     auto cpu2_st = std::chrono::high_resolution_clock::now();
     send_best_read_req(cur_beam_width - on_flight_ios.size());
     unsigned marker = 0, max_marker = 0;
-#ifdef OVERLAP_INIT
     if (likely(mem_L != 0)) {
       pq_table.populate_chunk_distances_nt(query, pq_dists);  // overlap with the first I/O.
       compute_pq_dists(mem_tags.data(), mem_L, dist_scratch, pq_coord_scratch);
@@ -468,11 +418,8 @@ namespace ccann {
       }
       std::sort(retset.begin(), retset.begin() + cur_list_size);
     }
-#endif
 
-#ifndef STATIC_POLICY
     int cur_n_in = 0, cur_tot = 0;
-#endif
     ANN_INIT_TIMING(poll_t);
     ANN_INIT_TIMING(calc_best_t);
 
@@ -490,11 +437,6 @@ namespace ccann {
       // n_in: number of nodes that can improve the retset.
       // n_out: number of nodes that can not improve the retset.
 
-#ifdef DYN_PIPE_WIDTH
-#ifdef STATIC_POLICY
-      constexpr int kBeamWidths[] = {4, 4, 8, 8, 16, 16, 24, 24, 32};
-      cur_beam_width = kBeamWidths[std::min(max_marker / 5, 8u)];
-#else
       if (max_marker >= 5 && n_in + n_out > 0) {
         cur_n_in += n_in;
         cur_tot += n_in + n_out;
@@ -507,15 +449,9 @@ namespace ccann {
           cur_beam_width = std::min((int64_t) beam_width, cur_beam_width);
         }
       }
-#endif
-#endif
 
       if ((int64_t) on_flight_ios.size() < cur_beam_width) {
-#ifdef NAIVE_PIPE
-        send_best_read_req(cur_beam_width - on_flight_ios.size());
-#else
         send_best_read_req(1);
-#endif
       }
 
       // auto io1_ed = std::chrono::high_resolution_clock::now();

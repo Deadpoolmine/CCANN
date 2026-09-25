@@ -1,7 +1,8 @@
 ## Quick Start (Search-Only)
 
 This section introduces how to build disk index and search using CCANN.
-To maximize search performance, `-DREAD_ONLY_TESTS` and `-DNO_MAPPING` definitions should be enabled in `CMakeLists.txt`.
+The SSD search and update policy is built in by default. Only `-DCCANN_TIMING=ON` is optional.
+Historical ablation configurations in older benchmark scripts are no longer supported by the build helper.
 
 ### For DiskANN Users
 
@@ -168,7 +169,6 @@ The recall is calculated after every 1M vectors are inserted/deleted.
 ### Prerequisites
 
 * Prepare datasets and run search-only CCANN, by referring to [Quick Start (Search-Only)](#quick-start-search-only).
-* Disable `-DREAD_ONLY_TESTS` and `-DNO_MAPPING` flags.
 * The in-memory index is optional.
 
 ### Generate Ground-Truths

@@ -170,14 +170,7 @@ namespace ccann {
         io_timer.reset();
 
         ANN_START_TIMING(do_read_best_node_time, read_best_t);
-#ifdef DIRECT_READ_CC
-        reader->read(frontier_read_reqs, ctx);
-        for (auto &req : frontier_read_reqs) {
-          page_ref.push_back(req.offset / SECTOR_LEN);
-        }
-#else
         reader->read_alloc(frontier_read_reqs, ctx, &page_ref);
-#endif
         ANN_END_TIMING(do_read_best_node_time, read_best_t);
 
         if (stats != nullptr) {
@@ -302,11 +295,9 @@ namespace ccann {
     std::sort(full_retset.begin(), full_retset.end(),
               [](const Neighbor &left, const Neighbor &right) { return left < right; });
 
-#ifndef DIRECT_READ_CC
     if (passthrough_page_ref == nullptr) {
       reader->deref(&page_ref, ctx);
     }
-#endif
 
     this->search_thread_count_--;
     push_query_buf(query_buf);

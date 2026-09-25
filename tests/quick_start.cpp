@@ -116,7 +116,7 @@ int run_pm_quick_start(const std::string &dtype_name, ccann::Distance<T> *dist_c
 
   // ============================================================
   // Step 1: Generate data & build disk index (PM-aware)
-  //   Requires cc-ann compile flags (-DBATCH_PRUNING -DEARLY_EXIT -DASYNC_INSERTION -DFINE_GRAINED_CONCURRENCY)
+  //   CCANN insertion and search policy is the default build.
   //   Build: memory index -> PQ compress -> create_disk_layout
   // ============================================================
   std::cout << "=== Step 1: Generate base data & build disk index ===" << std::endl;

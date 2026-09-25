@@ -77,11 +77,7 @@ namespace ccann {
     } else if (this->search_mode == PIPE_SEARCH) {
       search_func = &SSDIndex<T, TagT>::do_pipe_search;
     } else if (this->search_mode == PARA_SEARCH) {
-#ifdef ANN_LARGE
-      search_func = &SSDIndex<T, TagT>::do_para_search_sync;
-#else
       search_func = &SSDIndex<T, TagT>::do_para_search;
-#endif
     } else {
       LOG(ERROR) << "Invalid search mode: " << this->search_mode;
       crash();
@@ -127,22 +123,7 @@ namespace ccann {
 
     this->insert_thread_count_++;
 
-#ifdef IN_PLACE_RECORD_UPDATE
-    std::vector<uint64_t> locs;
-    for (auto &nbr : new_nhood) {
-      locs.emplace_back(id2loc(nbr));
-      pages_need_to_read.insert(node_sector_no(nbr));
-    }
-    locs.push_back(target_id);
-    pages_need_to_read.insert(loc_sector_no(target_id));
-    id2loc_.insert_or_assign(target_id, target_id);
-
-    // update loc2id, target_id <-> target_id.
-    cur_loc++;  // for target ID, atomic update.
-    set_loc2id(target_id, target_id);
-#else
     auto locs = this->alloc_loc(new_nhood.size() + 1, page_ref, pages_need_to_read);
-#endif
 
     uint64_t max_loc = 0;
     uint64_t extend_fsize = 0;
@@ -236,16 +217,10 @@ namespace ccann {
 
 // the last one
 // TODO: for PM, only needs one single barrier to be written (figure it out).
-#ifdef CC_ANN
-      // merge all writes except the last one.
-      writes.push_back(
-          IORequest(writes_4k[start_idx].offset, size_per_io * (i - start_idx), writes_4k[start_idx].buf, 0, 0));
-#else
       if (writes_4k[i].offset != cur_off + size_per_io) {
         writes.push_back(
             IORequest(writes_4k[start_idx].offset, size_per_io * (i - start_idx), writes_4k[start_idx].buf, 0, 0));
       }
-#endif
       writes_4k.pop_back();
     }
 
@@ -337,41 +312,6 @@ namespace ccann {
       assert(reader->check_addr_in_pm(nhood.data()) == false);
 
       if (nhood.size() > this->range) {  // prune neighbors
-#ifdef DELTA_PRUNING
-        auto &thread_pq_buf = read_data->aligned_pq_coord_scratch;
-        std::vector<float> tgt_dists(nhood.size(), 0.0f), nbr_dists(nhood.size(), 0.0f);
-
-        // TODO: do we really need to compute all distance?
-        // TODO: Key: can we only calculate part of the distances?
-        // TODO: batch this computation?
-
-        ANN_START_TIMING(prune_neighbor_time, prune_neighbor_t);
-        compute_pq_dists(target_id, nhood.data(), tgt_dists.data(), (_u32) nhood.size(), thread_pq_buf);
-        compute_pq_dists(r_nbr_node.id, nhood.data(), nbr_dists.data(), (_u32) nhood.size(), thread_pq_buf);
-        ANN_END_TIMING(prune_neighbor_time, prune_neighbor_t);
-
-        std::vector<TriangleNeighbor> tri_pool(nhood.size());
-
-        for (uint32_t k = 0; k < nhood.size(); k++) {
-          tri_pool[k].id = nhood[k];
-          tri_pool[k].tgt_dis = tgt_dists[k];
-          tri_pool[k].distance = nbr_dists[k];
-        }
-        std::sort(tri_pool.begin(), tri_pool.end());
-
-        int tgt_idx = -1;
-        for (int k = 0; k < (int) nhood.size(); ++k) {
-          if (tri_pool[k].id == target_id) {
-            tgt_idx = k;
-            break;
-          }
-        }
-        if (unlikely(tgt_idx == -1)) {
-          LOG(ERROR) << "Target ID " << target_id << " not found in tri_pool";
-          exit(-1);
-        }
-        this->delta_prune_neighbors_pq(tri_pool, nhood, thread_pq_buf, tgt_idx);
-#elif BATCH_PRUNING
         auto &thread_pq_buf = read_data->aligned_pq_coord_scratch;
         std::vector<float> tgt_dists(nhood.size(), 0.0f), nbr_dists(nhood.size(), 0.0f);
         std::vector<float> tgt_dists_batch(PRUNE_BATCH_SIZE, 0.0f), nbr_dists_batch(PRUNE_BATCH_SIZE, 0.0f);
@@ -387,9 +327,9 @@ namespace ccann {
           compute_pq_dists(r_nbr_node.id, nhood.data() + k, nbr_dists_batch.data(), (_u32) bsize, thread_pq_buf);
           ANN_END_TIMING(prune_neighbor_time, prune_neighbor_t);
 
-          std::vector<TriangleNeighbor> tri_pool(PRUNE_BATCH_SIZE);
+          std::vector<TriangleNeighbor> tri_pool(bsize);
 
-          for (size_t j = 0; j < PRUNE_BATCH_SIZE; j++) {
+          for (size_t j = 0; j < bsize; j++) {
             tri_pool[j].id = nhood[k + j];
             tri_pool[j].tgt_dis = tgt_dists_batch[j];
             tri_pool[j].distance = nbr_dists_batch[j];
@@ -440,19 +380,18 @@ namespace ccann {
           this->slow_delta_prune_neighbors_pq(tri_pool, nhood, thread_pq_buf, tgt_idx);
         }
 
-#else
-        std::vector<float> dists(nhood.size(), 0.0f);
-        std::vector<Neighbor> pool(nhood.size());
-        auto &thread_pq_buf = read_data->aligned_pq_coord_scratch;
-        compute_pq_dists(r_nbr_node.id, nhood.data(), dists.data(), (_u32) nhood.size(), thread_pq_buf);
-        for (uint32_t k = 0; k < nhood.size(); k++) {
-          pool[k].id = nhood[k];
-          pool[k].distance = dists[k];
+      }
+
+      // Keep an incoming edge when pruning would isolate an outlier.
+      if (i == 0 && std::find(nhood.begin(), nhood.end(), target_id) == nhood.end()) {
+        if (nhood.size() >= this->range) {
+          auto &scratch = read_data->aligned_pq_coord_scratch;
+          std::vector<float> distances(nhood.size());
+          compute_pq_dists(r_nbr_node.id, nhood.data(), distances.data(), (_u32) nhood.size(), scratch);
+          auto farthest = std::max_element(distances.begin(), distances.end()) - distances.begin();
+          nhood.erase(nhood.begin() + farthest);
         }
-        nhood.clear();
-        std::sort(pool.begin(), pool.end());
-        this->prune_neighbors_pq(pool, nhood, thread_pq_buf);
-#endif
+        nhood.push_back(target_id);
       }
 
       auto w_sector = loc_sector_no(locs[i]);
@@ -492,7 +431,6 @@ namespace ccann {
     // NOTE: File System provides atomic writes, ensuring that fallocate with zero populates.
     ANN_START_TIMING(update_metadata_time, update_meta_t);
     // Step 2. Update ID to Location Mapping in PM and DRAM
-#ifndef IN_PLACE_RECORD_UPDATE
     // Update id2loc PMem mapping to make Target Vector|Tags Persistent.
     auto id2loc_size = ROUND_UP((target_id + 1) * sizeof(uint32_t), SECTOR_LEN);
     auto id2loc_dax = id2loc_writer->get_dax(id2loc_size, false);
@@ -511,7 +449,6 @@ namespace ccann {
     reader->barrier_dax();
     id2loc_writer->sync();
 
-#ifdef FINE_GRAINED_CONCURRENCY
     // We do not need to lock idx_lock_table here, as id2loc_ is concurrent.
     // id2loc_ is already a concurrent hash map.
     // NOTE:
@@ -531,29 +468,8 @@ namespace ccann {
     // i.e., loc2id is not updated immediately after id2loc update.
     new_nhood.push_back(target_id);
     erase_and_set_loc(orig_locs, locs, new_nhood);
-#else
-    auto locked = lock_idx(idx_lock_table, target_id, new_nhood);
-    auto page_locked = lock_page_idx(page_idx_lock_table, target_id, new_nhood);
-    std::vector<uint64_t> orig_locs;
-    for (uint32_t i = 0; i < new_nhood.size(); ++i) {
-      orig_locs.emplace_back(id2loc(new_nhood[i]));
-      id2loc_.insert_or_assign(new_nhood[i], locs[i]);
-
-      // update PM id2loc
-      auto id_offset = new_nhood[i] * sizeof(uint32_t);
-      memcpy((char *) id2loc_dax + id_offset, &locs[i], sizeof(uint32_t));
-    }
-
-    // with lock, for simple concurrency with alloc_loc.
-    // Only for convenience, note that locs[new_nhood.size()] -> target.
-    new_nhood.push_back(target_id);
-    erase_and_set_loc(orig_locs, locs, new_nhood);
-    unlock_page_idx(page_idx_lock_table, page_locked);
-    unlock_idx(idx_lock_table, locked);
-#endif
     id2loc_writer->put_dax();
     id2loc_writer->sync();
-#endif
 
     ANN_END_TIMING(update_metadata_time, update_meta_t);
 
@@ -602,10 +518,8 @@ namespace ccann {
 
     v2::unlockReqs(this->page_lock_table, pages_locked);
 
-#ifndef DIRECT_READ_CC
     if (search_mode == BEAM_SEARCH)
       reader->deref(&page_ref, ctx);
-#endif
 
     this->insert_thread_count_--;
 
@@ -632,22 +546,7 @@ namespace ccann {
 
     this->insert_thread_count_++;
 
-#ifdef IN_PLACE_RECORD_UPDATE
-    std::vector<uint64_t> locs;
-    for (auto &nbr : new_nhood) {
-      locs.emplace_back(id2loc(nbr));
-      pages_need_to_read.insert(node_sector_no(nbr));
-    }
-    locs.push_back(target_id);
-    pages_need_to_read.insert(loc_sector_no(target_id));
-    id2loc_.insert_or_assign(target_id, target_id);
-
-    // update loc2id, target_id <-> target_id.
-    cur_loc++;  // for target ID, atomic update.
-    set_loc2id(target_id, target_id);
-#else
     auto locs = this->alloc_loc(new_nhood.size() + 1, page_ref, pages_need_to_read);
-#endif
 
     std::set<uint64_t> pages_to_rmw_set;
     for (auto &loc : locs) {
@@ -708,25 +607,15 @@ namespace ccann {
 
 // the last one
 // TODO: for PM, only needs one single barrier to be written (figure it out).
-#ifdef CC_ANN
-    // merge all writes except the last one.
-    writes.push_back(
-        IORequest(writes_4k[start_idx].offset, size_per_io * (i - start_idx), writes_4k[start_idx].buf, 0, 0));
-#else
     if (writes_4k[i].offset != cur_off + size_per_io) {
       writes.push_back(
           IORequest(writes_4k[start_idx].offset, size_per_io * (i - start_idx), writes_4k[start_idx].buf, 0, 0));
     }
-#endif
     writes_4k.pop_back();
 
     std::vector<uint64_t> read_page_ref;
     ANN_START_TIMING(read_nodes_time, read_nodes_t);
-#ifdef DIRECT_READ_CC
-    reader->read(reads, ctx);
-#else
     reader->read_alloc(reads, ctx, &read_page_ref);
-#endif
     ANN_END_TIMING(read_nodes_time, read_nodes_t);
 
     // update the target node.
@@ -743,11 +632,6 @@ namespace ccann {
     memcpy(target_node.nbrs, new_nhood.data(), new_nhood.size() * sizeof(uint32_t));
     tags.insert_or_assign(target_id, tag);
     auto node_len = data_dim * sizeof(T) + target_node.nnbrs * sizeof(uint32_t);
-#ifdef J_ANN
-    auto jhead = v2::journal_entry_head{locs[new_nhood.size()], target_id, node_len, data_dim, target_node.nnbrs};
-    auto jentry = v2::journal_entry<T>{jhead, target_node.coords, target_node.nbrs};
-    journal_entries.push_back(jentry);
-#endif
 
     // LOG(INFO) << "Target Node at " << locs[new_nhood.size()] << " in Sector " << sector << " (" << sector *
     // SECTOR_LEN
@@ -772,33 +656,6 @@ namespace ccann {
       // LOG(INFO) << "Original Neighbor Node (" << (new_nhood[i]) << ") at " << id2loc(new_nhood[i]) << " in Sector "
       //           << r_sector << " (" << r_sector * SECTOR_LEN << ")";
       if (nhood.size() > this->range) {  // prune neighbors
-#ifdef DELTA_PRUNING
-        auto &thread_pq_buf = read_data->aligned_pq_coord_scratch;
-        std::vector<float> tgt_dists(nhood.size(), 0.0f), nbr_dists(nhood.size(), 0.0f);
-        compute_pq_dists(target_id, nhood.data(), tgt_dists.data(), (_u32) nhood.size(), thread_pq_buf);
-        compute_pq_dists(r_nbr_node.id, nhood.data(), nbr_dists.data(), (_u32) nhood.size(), thread_pq_buf);
-        std::vector<TriangleNeighbor> tri_pool(nhood.size());
-
-        for (uint32_t k = 0; k < nhood.size(); k++) {
-          tri_pool[k].id = nhood[k];
-          tri_pool[k].tgt_dis = tgt_dists[k];
-          tri_pool[k].distance = nbr_dists[k];
-        }
-        std::sort(tri_pool.begin(), tri_pool.end());
-
-        int tgt_idx = -1;
-        for (int k = 0; k < (int) nhood.size(); ++k) {
-          if (tri_pool[k].id == target_id) {
-            tgt_idx = k;
-            break;
-          }
-        }
-        if (unlikely(tgt_idx == -1)) {
-          LOG(ERROR) << "Target ID " << target_id << " not found in tri_pool";
-          exit(-1);
-        }
-        this->delta_prune_neighbors_pq(tri_pool, nhood, thread_pq_buf, tgt_idx);
-#elif BATCH_PRUNING
         auto &thread_pq_buf = read_data->aligned_pq_coord_scratch;
         std::vector<float> tgt_dists(nhood.size(), 0.0f), nbr_dists(nhood.size(), 0.0f);
         std::vector<float> tgt_dists_batch(PRUNE_BATCH_SIZE, 0.0f), nbr_dists_batch(PRUNE_BATCH_SIZE, 0.0f);
@@ -812,9 +669,9 @@ namespace ccann {
           compute_pq_dists(target_id, nhood.data() + k, tgt_dists_batch.data(), (_u32) bsize, thread_pq_buf);
           compute_pq_dists(r_nbr_node.id, nhood.data() + k, nbr_dists_batch.data(), (_u32) bsize, thread_pq_buf);
 
-          std::vector<TriangleNeighbor> tri_pool(PRUNE_BATCH_SIZE);
+          std::vector<TriangleNeighbor> tri_pool(bsize);
 
-          for (size_t j = 0; j < PRUNE_BATCH_SIZE; j++) {
+          for (size_t j = 0; j < bsize; j++) {
             tri_pool[j].id = nhood[k + j];
             tri_pool[j].tgt_dis = tgt_dists_batch[j];
             tri_pool[j].distance = nbr_dists_batch[j];
@@ -864,19 +721,6 @@ namespace ccann {
           }
           this->slow_delta_prune_neighbors_pq(tri_pool, nhood, thread_pq_buf, tgt_idx);
         }
-#else
-        std::vector<float> dists(nhood.size(), 0.0f);
-        std::vector<Neighbor> pool(nhood.size());
-        auto &thread_pq_buf = read_data->aligned_pq_coord_scratch;
-        compute_pq_dists(r_nbr_node.id, nhood.data(), dists.data(), (_u32) nhood.size(), thread_pq_buf);
-        for (uint32_t k = 0; k < nhood.size(); k++) {
-          pool[k].id = nhood[k];
-          pool[k].distance = dists[k];
-        }
-        nhood.clear();
-        std::sort(pool.begin(), pool.end());
-        this->prune_neighbors_pq(pool, nhood, thread_pq_buf);
-#endif
       }
 
       auto w_sector = loc_sector_no(locs[i]);
@@ -886,23 +730,14 @@ namespace ccann {
       *(w_nbr_node.nbrs - 1) = (_u32) nhood.size();  // write to buf
       memcpy(w_nbr_node.coords, r_nbr_node.coords, data_dim * sizeof(T));
       memcpy(w_nbr_node.nbrs, nhood.data(), w_nbr_node.nnbrs * sizeof(uint32_t));
-#ifdef J_ANN
-      auto node_len = data_dim * sizeof(T) + w_nbr_node.nnbrs * sizeof(uint32_t);
-      auto jhead = v2::journal_entry_head{locs[i], new_nhood[i], node_len, data_dim, w_nbr_node.nnbrs};
-      auto jentry = v2::journal_entry<T>{jhead, w_nbr_node.coords, w_nbr_node.nbrs};
-      journal_entries.push_back(jentry);
-#endif
       // LOG(INFO) << "New Neighbor Node (" << new_nhood[i] << ") at " << locs[i] << " in Sector "
       //           << w_sector << " (" << w_sector * SECTOR_LEN << ")";
     }
 
     std::vector<uint64_t> write_page_ref;
 
-#ifndef DIRECT_READ_CC
     reader->wbc_write(writes, ctx, &write_page_ref);
-#endif
 
-#ifndef IN_PLACE_RECORD_UPDATE
     // update locs
     // no concurrency issue for target_id (as it can be only inserted).
     id2loc_.insert_or_assign(target_id, locs[new_nhood.size()]);
@@ -921,37 +756,15 @@ namespace ccann {
     unlock_page_idx(page_idx_lock_table, page_locked);
     unlock_idx(idx_lock_table, locked);
     // LOG(INFO) << "ID " << target_id << " Target loc " << id2loc(target_id);
-#endif
 
     unlock_vec(vec_lock_table, target_id, new_nhood);
 
     // commit writes (in the background thread.)
-#ifdef BG_IO_THREAD
-    if (!page_ref.empty()) {
-      auto bg_task = new BgTask{
-          .thread_data = read_data,
-          .writes = std::move(writes),
-          .pages_to_unlock = std::move(pages_locked),
-          .pages_to_deref = std::move(write_page_ref),
-      };
-      bg_io_tasks.push(bg_task);
-      bg_io_tasks.push_notify_all();
-    } else {
-      v2::unlockReqs(this->page_lock_table, pages_locked);
-    }
-    reader->deref(&page_ref, ctx);
-#else
     ANN_END_TIMING(update_graph_time, update_t);
 
     // generate journal writes
     // copy all entries to a continuous buffer
 
-#ifdef J_ANN
-    auto journal = (v2::Journal<TagT> *) this->get_cur_journal_instance();
-    ANN_START_TIMING(journal_time, journal_t);
-    journal->append_and_commit_journal(journal_entries);
-    ANN_END_TIMING(journal_time, journal_t);
-#endif
     // std::cout << "Flushing " << writes.size() << " writes to PMem." << std::endl;
 
     ANN_START_TIMING(update_graph_time, update_t);
@@ -966,31 +779,18 @@ namespace ccann {
     //   // std::cout << "Write to sector " << req.offset / SECTOR_LEN << " len " << req.len << " cksum " << cksum
     //   //           << std::endl;
     // }
-#ifdef J_ANN
-    // the following part seems can be done asynchronously.
-    // ensure the updates are persistent,
-    // before clearing the journal.
-    ANN_START_TIMING(journal_time, journal_t);
-    reader->sync();
-    // commit journal. How?
-    journal->clear_journal();
-    ANN_END_TIMING(journal_time, journal_t);
-#endif
 
     v2::unlockReqs(this->page_lock_table, pages_locked);
     reader->deref(&write_page_ref, ctx);
 
-#ifndef DIRECT_READ_CC
     if (search_mode == BEAM_SEARCH)
       reader->deref(&page_ref, ctx);
-#endif
 
     reader->deref(&read_page_ref, ctx);
 
     this->insert_thread_count_--;
     this->push_query_buf(read_data);
     num_points++;
-#endif
     return target_id;
   }
 
@@ -1021,9 +821,6 @@ namespace ccann {
       func = &SSDIndex<T, TagT>::insert_phase;
     }
 
-#ifdef J_ANN
-    func = &SSDIndex<T, TagT>::insert_phase;
-#endif
 
     auto search_threads = this->search_thread_count_.load();
     auto insert_threads = this->insert_thread_count_.load();
@@ -1037,16 +834,12 @@ namespace ccann {
       }
     }
 
-#ifdef NO_ACC_OPT
-    should_async = true;
-#endif
 
     if (search_threads + insert_threads + calc_threads > this->peak_cpus) {
       this->peak_cpus = search_threads + insert_threads + calc_threads;
     }
 
     if (should_async) {
-#ifdef USE_BS_THREAD_POOL
       insert_pool->detach_task([this, point, tag, target_id, exp_node_info = std::move(exp_node_info),
                                 coord_map = std::move(coord_map), new_nhood = std::move(new_nhood),
                                 page_ref = std::move(page_ref), out_pq_coords = std::move(out_pq_coords),
@@ -1056,16 +849,6 @@ namespace ccann {
         (this->*func)(point, tag, target_id, exp_node_info, coord_map, new_nhood, page_ref, out_pq_coords);
         ANN_END_TIMING(insert_phase_time, insert_t);
       });
-#elif USE_SMALL_THREAD_POOL
-      insert_pool->submit([this, point, tag, target_id, exp_node_info = std::move(exp_node_info),
-                           coord_map = std::move(coord_map), new_nhood = std::move(new_nhood),
-                           page_ref = std::move(page_ref), out_pq_coords = std::move(out_pq_coords), func]() mutable {
-        ANN_INIT_TIMING(insert_t);
-        ANN_START_TIMING(insert_phase_time, insert_t);
-        (this->*func)(point, tag, target_id, exp_node_info, coord_map, new_nhood, page_ref, out_pq_coords);
-        ANN_END_TIMING(insert_phase_time, insert_t);
-      });
-#endif
     } else {
       ANN_INIT_TIMING(insert_t);
       ANN_START_TIMING(insert_phase_time, insert_t);
@@ -1078,11 +861,7 @@ namespace ccann {
 
   template<typename T, typename TagT>
   void SSDIndex<T, TagT>::synchronize_insertions() {
-#ifdef USE_BS_THREAD_POOL
     insert_pool->wait();
-#elif USE_SMALL_THREAD_POOL
-    insert_pool->wait_all();
-#endif
   }
 
   template<typename T, typename TagT>
@@ -1110,13 +889,7 @@ namespace ccann {
       func = &SSDIndex<T, TagT>::insert_phase;
     }
 
-#ifdef ODIN_ANN
-    func = &SSDIndex<T, TagT>::insert_phase;
-#endif
 
-#ifdef J_ANN
-    func = &SSDIndex<T, TagT>::insert_phase;
-#endif
 
     ANN_INIT_TIMING(insert_t);
     ANN_START_TIMING(insert_phase_time, insert_t);
@@ -1194,18 +967,15 @@ namespace ccann {
           break;
         }
       }
-#ifndef NO_ISS
       if (ckpt) {
         // ensure all previous writes are persistent
         reader->barrier_dax();
         id2loc_writer->sync();
-#ifndef ANN_LARGE
         pq_compressed_writer->sync();
         auto pq_header = pq_compressed_writer->get_dax(SECTOR_LEN, false);
         memcpy(pq_header, &cur_ckpt_id, sizeof(uint32_t));
         pq_compressed_writer->sync();
         pq_compressed_writer->put_dax();
-#endif
         if (enable_tags) {
           tags_writer->sync();
           auto tags_header = tags_writer->get_dax(SECTOR_LEN, false);
@@ -1222,7 +992,6 @@ namespace ccann {
         reader->put_dax();
         this->ckpt_id.store(cur_ckpt_id);
       }
-#endif
     };
 
     while (true) {
@@ -1261,8 +1030,6 @@ namespace ccann {
       auto pq_coords = task->pq_coords.data();
       auto target_id = task->target_id;
 
-#ifndef NO_ISS
-#ifndef ANN_LARGE
       auto pq_bytes_per_vector = task->pq_coords.size() * sizeof(uint8_t);
       auto pq_size = ROUND_UP(2 * sizeof(uint32_t) + (target_id + 1) * pq_bytes_per_vector, SECTOR_LEN);
       auto pq_addr = this->pq_compressed_writer->get_dax(pq_size, false);
@@ -1270,8 +1037,6 @@ namespace ccann {
       memcpy((char *) pq_addr + pq_offset, pq_coords, pq_bytes_per_vector);
       pq_compressed_writer->sync();
       this->pq_compressed_writer->put_dax();
-#endif
-#endif
 
       // Drain pending background PM id2loc updates (from id2loc_insert_or_assign).
       // Sequence number (target_id / id) ensures ordering via the commit priority queue.

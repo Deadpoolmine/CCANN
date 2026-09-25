@@ -213,12 +213,6 @@ namespace ccann {
     bool has_tags = std::filesystem::exists(disk_prefix_in + "_disk.index.tags");
     _disk_index = new ccann::SSDIndex<T, TagT>(this->_dist_metric, reader, pq_compressed_writer, tags_writer,
                                                  id2loc_writer, false, has_tags, &_paras_disk);
-#ifdef J_ANN
-    _disk_index->journals = new v2::Journal<TagT> *[N_JOURNAL];
-    for (int i = 0; i < N_JOURNAL; i++) {
-      _disk_index->journals[i] = new v2::Journal<TagT>(disk_prefix_out + "_journal" + std::to_string(i) + ".log");
-    }
-#endif
 
     std::string id2loc_file(disk_prefix_in + "_disk.index.id2loc");
     std::string index_file(disk_prefix_in + "_disk.index");
@@ -226,7 +220,6 @@ namespace ccann {
       build_id2loc_mapping(index_file, id2loc_file);
     }
 
-#ifndef NO_POLLUTE_ORIGINAL
     if (read_only) {
       LOG(WARNING)
           << "Read-only mode is enabled. The original index files will not be modified during dynamic updates.";
@@ -236,7 +229,6 @@ namespace ccann {
       LOG(INFO) << "Copy disk index file to " << disk_index_prefix_shadow << "_disk.index";
       _disk_index_prefix_in = disk_index_prefix_shadow;
     }
-#endif
 
     if (search_mode == BEAM_SEARCH || search_mode == PAGE_SEARCH || search_mode == PIPE_SEARCH ||
         search_mode == PARA_SEARCH) {
@@ -281,10 +273,6 @@ namespace ccann {
     if (_disk_index->insert_pool != nullptr) {
       _disk_index->synchronize_insertions();
 
-#ifdef USE_SMALL_THREAD_POOL
-      // _disk_index is not automatically deleted.
-      delete _disk_index->insert_pool.get();
-#endif
     }
 
     auto final_task = new typename SSDIndex<T, TagT>::CommitTask{
@@ -307,11 +295,7 @@ namespace ccann {
     auto *deletion_set = &deletion_sets[active_delete_set];
     int target_id = 0;
 
-#ifdef ASYNC_INSERTION
     target_id = _disk_index->async_insert_in_place(point, tag, deletion_set);
-#else
-    target_id = _disk_index->insert_in_place(point, tag, deletion_set);
-#endif
 
     return target_id;
   }
@@ -384,13 +368,11 @@ namespace ccann {
     deletion_sets[nxt_idx] = deletion_sets[cur_idx];
     deleted_tags[nxt_idx] = deleted_tags[cur_idx];
     bool expected_active = false;
-#ifndef ODIN_ANN_IMMEDIATE_NO_CC
     if (active_del[nxt_idx].compare_exchange_strong(expected_active, true)) {
       LOG(INFO) << "Cleared deletion set " << nxt_idx << " - ready to accept new points";
     } else {
       LOG(INFO) << "Failed to clear deletion set " << nxt_idx;
     }
-#endif
     active_delete_set = nxt_idx;
     active_del[cur_idx].store(false);
   }
@@ -405,19 +387,13 @@ namespace ccann {
 
     // The active instance still reads the source generation; its deletion set
     // remains cumulative until a new instance opens the compacted output.
-#ifndef ODIN_ANN_IMMEDIATE_NO_CC
     LOG(INFO) << "Merge time : " << timer.elapsed() / 1000 << " ms";
-#endif
   }
 
   template<typename T, typename TagT>
   void DynamicSSDIndex<T, TagT>::merge(const uint32_t &nthreads, const uint32_t &n_sampled_nbrs) {
-#ifdef ODIN_ANN_IMMEDIATE_NO_CC
-    _disk_index->merge(_disk_index_prefix_in, _disk_index_prefix_out);
-#else
     _disk_index->merge_deletes(_disk_index_prefix_in, _disk_index_prefix_out, deleted_tags[1 - active_delete_set],
                                deletion_sets[1 - active_delete_set], nthreads, n_sampled_nbrs);
-#endif
   }
 
   template class DynamicSSDIndex<float>;

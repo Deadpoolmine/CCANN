@@ -365,9 +365,6 @@ int generate_pq_data_from_pivots(const std::string data_file, unsigned num_cente
   size_t num_points = npts32;
   size_t dim = basedim32;
 
-#ifdef SAVE_INFLATED_PQ
-  std::string inflated_pq_file = pq_compressed_vectors_path + "_full.bin";
-#endif
 
   size_t BLOCK_SIZE = (std::min) ((size_t) MAX_BLOCK_SIZE, num_points);
 
@@ -432,14 +429,6 @@ int generate_pq_data_from_pivots(const std::string data_file, unsigned num_cente
   compressed_file_writer.write((char *) &num_points, sizeof(uint32_t));
   compressed_file_writer.write((char *) &num_pq_chunks_u32, sizeof(uint32_t));
 
-#ifdef SAVE_INFLATED_PQ
-  std::ofstream inflated_file_writer(inflated_pq_file, std::ios::binary);
-  inflated_file_writer.write((char *) &npts32, sizeof(uint32_t));
-  inflated_file_writer.write((char *) &basedim32, sizeof(uint32_t));
-
-  std::unique_ptr<float[]> block_inflated_base = std::make_unique<float[]>(BLOCK_SIZE * (_u64) dim);
-  std::memset(block_inflated_base.get(), 0, BLOCK_SIZE * (_u64) dim * sizeof(float));
-#endif
 
   size_t block_size = num_points <= BLOCK_SIZE ? num_points : BLOCK_SIZE;
   std::unique_ptr<_u32[]> block_compressed_base = std::make_unique<_u32[]>(block_size * (_u64) num_pq_chunks);
@@ -497,17 +486,9 @@ int generate_pq_data_from_pivots(const std::string data_file, unsigned num_cente
 #pragma omp parallel for schedule(static, 8192)
       for (int64_t j = 0; j < (_s64) cur_blk_size; j++) {
         block_compressed_base[j * num_pq_chunks + i] = closest_center[j];
-#ifdef SAVE_INFLATED_PQ
-        for (uint64_t k = 0; k < cur_chunk_size; k++)
-          block_inflated_base[j * dim + chunk_offsets[i] + k] =
-              cur_pivot_data[closest_center[j] * cur_chunk_size + k] + centroid[chunk_offsets[i] + k];
-#endif
       }
     }
 
-#ifdef SAVE_INFLATED_PQ
-    inflated_file_writer.write((char *) block_inflated_base.get(), cur_blk_size * dim * sizeof(float));
-#endif
 
     if (num_centers > 256) {
       compressed_file_writer.write((char *) (block_compressed_base.get()),
@@ -524,9 +505,6 @@ int generate_pq_data_from_pivots(const std::string data_file, unsigned num_cente
   // Splittng diskann_dll into separate DLLs for search and build.
   // This code should only be available in the "build" DLL.
   compressed_file_writer.close();
-#ifdef SAVE_INFLATED_PQ
-  inflated_file_writer.close();
-#endif
   return 0;
 }
 

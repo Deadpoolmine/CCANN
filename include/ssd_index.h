@@ -20,11 +20,7 @@
 #include "neighbor.h"
 #include "index.h"
 
-#ifdef USE_BS_THREAD_POOL
 #include "BS_thread_pool.hpp"
-#elif USE_SMALL_THREAD_POOL
-#include "thread_pool.h"
-#endif
 
 #include "async_comp.h"
 
@@ -435,11 +431,7 @@ namespace ccann {
     // only one thread for barrier simplification.
     std::thread *commit_thread_{nullptr};
 
-#ifdef USE_BS_THREAD_POOL
     std::unique_ptr<BS::thread_pool<>> insert_pool = nullptr;
-#elif USE_SMALL_THREAD_POOL
-    std::unique_ptr<ThreadPool> insert_pool = nullptr;
-#endif
 
     // test the estimation efficacy.
     uint32_t beam_width, l_index, range, maxc;
@@ -452,16 +444,12 @@ namespace ccann {
     // if ID == tag, then it is not stored.
     libcuckoo::cuckoohash_map<uint32_t, TagT> tags;
     TagT id2tag(uint32_t id) {
-#ifdef NO_MAPPING
-      return id;  // use ID to replace tags.
-#else
       TagT ret;
       if (tags.find(id, ret)) {
         return ret;
       } else {
         return id;
       }
-#endif
     }
 
     int get_vector_by_id(const uint32_t &id, T *vector);
@@ -509,35 +497,26 @@ namespace ccann {
     // lock the mapping for target/page if use_page_search == false/true.
     std::vector<uint32_t> lock_idx(v2::SparseLockTable<uint64_t> &lock_table, uint32_t target,
                                    const std::vector<uint32_t> &neighbors, bool rd = false) {
-#ifndef READ_ONLY_TESTS
       std::vector<uint32_t> to_lock = get_to_lock_idx(target, neighbors);
       for (auto &id : to_lock) {
         rd ? lock_table.rdlock(id) : lock_table.wrlock(id);
       }
       return to_lock;
-#else
-      return std::vector<uint32_t>();
-#endif
     }
 
     void unlock_idx(v2::SparseLockTable<uint64_t> &lock_table, const std::vector<uint32_t> &to_lock) {
-#ifndef READ_ONLY_TESTS
       for (auto &id : to_lock) {
         lock_table.unlock(id);
       }
-#endif
     }
 
     void unlock_idx(v2::SparseLockTable<uint64_t> &lock_table, const uint32_t &to_lock) {
-#ifndef READ_ONLY_TESTS
       lock_table.unlock(to_lock);
-#endif
     }
 
     // two-level, as id2page may change before and after grabbing the lock.
     std::vector<uint32_t> lock_page_idx(v2::SparseLockTable<uint64_t> &lock_table, uint32_t target,
                                         const std::vector<uint32_t> &neighbors, bool rd = false) {
-#ifndef READ_ONLY_TESTS
       if (!use_page_search_) {
         return std::vector<uint32_t>();
       }
@@ -559,20 +538,15 @@ namespace ccann {
         rd ? lock_table.rdlock(id) : lock_table.wrlock(id);
       }
       return to_lock;
-#else
-      return std::vector<uint32_t>();
-#endif
     }
 
     void unlock_page_idx(v2::SparseLockTable<uint64_t> &lock_table, const std::vector<uint32_t> &to_lock) {
-#ifndef READ_ONLY_TESTS
       if (!use_page_search_) {
         return;
       }
       for (auto &id : to_lock) {
         lock_table.unlock(id);
       }
-#endif
     }
 
     // in-memory navigation graph
@@ -591,9 +565,6 @@ namespace ccann {
 
     libcuckoo::cuckoohash_map<uint32_t, uint32_t> id2loc_;  // id -> loc (start from 0)
     uint32_t id2loc(uint32_t id) {
-#ifdef NO_MAPPING
-      return id;
-#else
       uint32_t loc = 0;
       if (id2loc_.find(id, loc)) {
         return loc;
@@ -602,16 +573,10 @@ namespace ccann {
         crash();
         return kInvalidID;
       }
-#endif
     }
 
     // pass the function to the id2loc with find_fn
     uint32_t id2loc_func(uint32_t id, const std::function<void(uint32_t &)> &func) {
-#ifdef NO_MAPPING
-      uint32_t loc = id;
-      func(loc);
-      return loc;
-#else
       uint32_t loc = 0;
       if (id2loc_.find_fn(id, [&](uint32_t &v) {
             loc = v;
@@ -623,7 +588,6 @@ namespace ccann {
         crash();
         return kInvalidID;
       }
-#endif
     }
 
     // Atomically insert-or-assign id->loc in DRAM and send (id, loc) to the
@@ -706,21 +670,11 @@ namespace ccann {
       std::vector<uint64_t> ret;
       int cur = 0;
       // reuse.
-#ifdef ANN_LARGE
-      uint32_t threshold = 1;
-      // (nnodes_per_sector + kIndexSizeFactor - 1) / kIndexSizeFactor;
-#else
       uint32_t threshold = (nnodes_per_sector + kIndexSizeFactor - 1) / kIndexSizeFactor;
-#endif
 
       // Rule #1: empty rule:
       uint32_t empty_page = kInvalidID;
       while ((empty_page = empty_pages.pop()) != kInvalidID) {
-#ifdef NO_POLLUTE_ORIGINAL
-        if (empty_page < loc_sector_no(init_num_pts)) {
-          continue;
-        }
-#endif
         // allocate all the pages.
         page_layout.update_fn(empty_page, [&](PageArr &v) {
           // nnodes_per_sector is the number of nodes (VEC+NEIGHBORS) in a sector.
@@ -745,11 +699,6 @@ namespace ccann {
       // Rule #2: on-path partial-empty rule
       //          these pages should mostly hit cache.
       for (auto &p : hint_pages) {
-#ifdef NO_POLLUTE_ORIGINAL
-        if (p < loc_sector_no(init_num_pts)) {
-          continue;
-        }
-#endif
         // see the hole number
         page_layout.update_fn(p, [&](PageArr &v) {
           uint32_t cnt = 0;
@@ -812,11 +761,6 @@ namespace ccann {
       // Rule #1: empty rule:
       uint32_t empty_page = kInvalidID;
       while ((empty_page = empty_pages.pop()) != kInvalidID) {
-#ifdef NO_POLLUTE_ORIGINAL
-        if (empty_page < loc_sector_no(init_num_pts)) {
-          continue;
-        }
-#endif
         // allocate all the pages.
         page_layout.update_fn(empty_page, [&](PageArr &v) {
           // nnodes_per_sector is the number of nodes (VEC+NEIGHBORS) in a sector.
@@ -854,11 +798,6 @@ namespace ccann {
       // Rule #2: on-path partial-empty rule
       //          these pages should mostly hit cache.
       for (auto &p : hint_pages) {
-#ifdef NO_POLLUTE_ORIGINAL
-        if (p < loc_sector_no(init_num_pts)) {
-          continue;
-        }
-#endif
         // see the hole number
         page_layout.update_fn(p, [&](PageArr &v) {
           uint32_t cnt = 0;

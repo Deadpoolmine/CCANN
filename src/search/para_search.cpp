@@ -19,9 +19,7 @@
 #include <unistd.h>
 #include <sys/syscall.h>
 
-#ifndef USE_AIO
 #include "liburing.h"
-#endif
 
 #include "async_comp.h"
 #include "circular_buffer.h"
@@ -60,7 +58,6 @@ namespace ccann {
     }
   };
 
-#ifdef EARLY_EXIT
   inline float mean(const std::deque<float> &vals) {
     if (vals.empty())
       return 0.0f;
@@ -79,7 +76,6 @@ namespace ccann {
     return accum / (vals.size() - 1);  // 无偏估计
   }
 
-#endif
 
 #define NO_EARLY_STOP_FLAG (0)
 #define EARLY_STOP_FLAG (-1)
@@ -103,11 +99,7 @@ namespace ccann {
                                          std::vector<uint64_t> *passthrough_page_ref, uint32_t k_search) {
     uint32_t original_l_search = l_search;
     ANN_INIT_TIMING(populate_t);
-#ifdef USE_AIO
-    void *ctx = reader->get_ctx();
-#else
     void *ctx = reader->get_ctx(IORING_SETUP_SQPOLL);  // use SQ polling only for pipe search.
-#endif
     auto comp_ring = get_comp_engine();
 
     this->search_thread_count_++;
@@ -116,9 +108,6 @@ namespace ccann {
     auto insert_threads = this->insert_thread_count_.load();
     auto calc_threads = this->calc_thread_count_.load();
 
-#ifdef NO_ACC_OPT
-    // disable dynamic adjustment
-#else
     auto threshold = this->num_cpus;
 
     if (this->is_index_inserttable) {
@@ -139,7 +128,6 @@ namespace ccann {
         this->calc_thread_count_++;
       }
     }
-#endif
 
     if (search_threads + insert_threads + calc_threads > this->peak_cpus) {
       this->peak_cpus = search_threads + insert_threads + calc_threads;
@@ -186,9 +174,6 @@ namespace ccann {
     // query <-> PQ chunk centers distances
     float *pq_dists = query_buf->aligned_pqtable_dist_scratch;
 
-#ifndef OVERLAP_INIT
-    pq_table.populate_chunk_distances(query, pq_dists);  // overlap with the first I/O.
-#endif
 
     // lambda to batch compute query<-> node distances in PQ space
     auto compute_pq_dists = [this, pq_dists, query_buf](const unsigned *ids, const _u64 n_ids, float *dists_out,
@@ -197,7 +182,6 @@ namespace ccann {
       ::pq_dist_lookup(pq_coord_scratch, n_ids, this->n_chunks, pq_dists, dists_out);
     };
 
-#ifdef EARLY_EXIT
     float prev_median = std::numeric_limits<float>::infinity();
     float alpha = 0;
     float alpha_min = 0;
@@ -206,7 +190,6 @@ namespace ccann {
     float tau_volatile = 0.1;          // 大于10%视为波动
     std::deque<float> median_history;  // 存储最近N个窗口中位数
     unsigned median_window = 5;        // 可调，用于检测趋势稳定性
-#endif
 
     auto push_nbrs = [&](unsigned *nbrs, unsigned nnbrs, float *dist_scratch, unsigned &n_in, unsigned &n_out) {
       ANN_INIT_TIMING(compute_t);
@@ -253,17 +236,12 @@ namespace ccann {
     stats->cpu_us2 = 0;
     // search in in-memory index.
 
-#ifdef DYN_PIPE_WIDTH
     int64_t cur_beam_width = 4;  // before converge.
-#else
-    int64_t cur_beam_width = beam_width;  // before converge.
-#endif
 
     std::vector<unsigned> mem_tags(mem_L);
     std::vector<float> mem_dists(mem_L);
 
     ANN_START_TIMING(populate_pq_dists_time, populate_t);
-#ifdef OVERLAP_INIT
     if (mem_L) {
       mem_index_->search_with_tags_fast(query, mem_L, mem_tags.data(), mem_dists.data());
       add_to_retset(mem_tags.data(), std::min((unsigned) mem_L, (unsigned) l_search), mem_dists.data());
@@ -276,17 +254,6 @@ namespace ccann {
       compute_pq_dists(&medoids[0], 1, dist_scratch, pq_coord_scratch);
       add_to_retset(&medoids[0], 1, dist_scratch);
     }
-#else
-    if (mem_L) {
-      mem_index_->search_with_tags_fast(query, mem_L, mem_tags.data(), mem_dists.data());
-      compute_pq_dists(mem_tags.data(), mem_L, dist_scratch, pq_coord_scratch);
-      add_to_retset(mem_tags.data(), std::min((_u64) mem_L, l_search), dist_scratch);
-    } else {
-      compute_pq_dists(&medoids[0], 1, dist_scratch, pq_coord_scratch);
-      add_to_retset(&medoids[0], 1, dist_scratch);
-    }
-    std::sort(retset.begin(), retset.begin() + cur_list_size);
-#endif
     ANN_END_TIMING(populate_pq_dists_time, populate_t);
 
     std::queue<comp_t> on_flight_comps;
@@ -303,7 +270,6 @@ namespace ccann {
       auto buf = sector_scratch + cur_buf_idx * size_per_io;
       auto &req = query_buf->reqs[cur_buf_idx];
       auto loc = 0;
-#ifdef FINE_GRAINED_CONCURRENCY
       if (this->on_pm) {
         loc = id2loc_func(item.id, [&](uint32_t &loc) {
           pid = loc_sector_no(loc);
@@ -321,25 +287,6 @@ namespace ccann {
         LOG(ERROR) << "Fine grained concurrency is only supported for PM index.";
         crash();
       }
-#else
-      loc = id2loc(item.id);
-      pid = loc_sector_no(loc);
-      this->lock_idx(idx_lock_table, item.id, std::vector<uint32_t>(), true);
-      req = IORequest(static_cast<_u64>(pid) * SECTOR_LEN, size_per_io, buf, u_loc_offset(loc), max_node_len);
-
-      ANN_START_TIMING(send_best_node_time, send_best_t);
-      reader->send_io(req, ctx, false);
-      ANN_ADD_STAT(send_best_node_number, 1);
-      ANN_END_TIMING(send_best_node_time, send_best_t);
-      if (passthrough_page_ref != nullptr)
-        passthrough_page_ref->push_back((static_cast<_u64>(pid) * SECTOR_LEN) / SECTOR_LEN);
-
-      // immediately read
-      id_buf_map.insert(std::make_pair(item.id, offset_to_loc((char *) req.buf, loc)));
-
-      // for PM index, unlock immediately.
-      this->unlock_idx(idx_lock_table, item.id);
-#endif
       cur_buf_idx = (cur_buf_idx + 1) % MAX_N_SECTOR_READS;
       if (stats != nullptr) {
         stats->n_ios++;
@@ -440,9 +387,7 @@ namespace ccann {
     auto cpu2_st = std::chrono::high_resolution_clock::now();
     int marker = 0, max_marker = 0;
 
-#ifndef STATIC_POLICY
     int cur_n_in = 0, cur_tot = 0;
-#endif
     ANN_INIT_TIMING(poll_t);
     ANN_INIT_TIMING(calc_best_t);
 
@@ -471,7 +416,6 @@ namespace ccann {
       // LOG(INFO) << "Expanding node " << id << " distance " << cur_expanded_dist;
       full_retset.push_back(Neighbor(id, cur_expanded_dist, true));
 
-#ifdef EARLY_EXIT
       int start_thresh = l_search / 2;
       if (max_marker > start_thresh) {
         // uint32_t E = std::min((uint32_t) (l_search - start_thresh), 2 * k_search);
@@ -530,7 +474,6 @@ namespace ccann {
           // }
         }
       }
-#endif
 
       ANN_END_TIMING(calc_exact_dist_time, compute_t);
 
@@ -672,11 +615,7 @@ namespace ccann {
                                               std::vector<uint64_t> *passthrough_page_ref, uint32_t k_search) {
     uint32_t original_l_search = l_search;
     ANN_INIT_TIMING(populate_t);
-#ifdef USE_AIO
-    void *ctx = reader->get_ctx();
-#else
     void *ctx = reader->get_ctx(IORING_SETUP_SQPOLL);  // use SQ polling only for pipe search.
-#endif
 
     this->search_thread_count_++;
     auto search_threads = this->search_thread_count_.load();
@@ -728,9 +667,6 @@ namespace ccann {
     // query <-> PQ chunk centers distances
     float *pq_dists = query_buf->aligned_pqtable_dist_scratch;
 
-#ifndef OVERLAP_INIT
-    pq_table.populate_chunk_distances(query, pq_dists);  // overlap with the first I/O.
-#endif
 
     // lambda to batch compute query<-> node distances in PQ space
     auto compute_pq_dists = [this, pq_dists, query_buf](const unsigned *ids, const _u64 n_ids, float *dists_out,
@@ -739,7 +675,6 @@ namespace ccann {
       ::pq_dist_lookup(pq_coord_scratch, n_ids, this->n_chunks, pq_dists, dists_out);
     };
 
-#ifdef EARLY_EXIT
     float prev_median = std::numeric_limits<float>::infinity();
     float alpha = 0;
     float alpha_min = 0;
@@ -748,7 +683,6 @@ namespace ccann {
     float tau_volatile = 0.1;          // 大于10%视为波动
     std::deque<float> median_history;  // 存储最近N个窗口中位数
     unsigned median_window = 5;        // 可调，用于检测趋势稳定性
-#endif
 
     auto push_nbrs = [&](unsigned *nbrs, unsigned nnbrs, float *dist_scratch, unsigned &n_in, unsigned &n_out) {
       ANN_INIT_TIMING(compute_t);
@@ -795,17 +729,12 @@ namespace ccann {
     stats->cpu_us2 = 0;
     // search in in-memory index.
 
-#ifdef DYN_PIPE_WIDTH
     int64_t cur_beam_width = 4;  // before converge.
-#else
-    int64_t cur_beam_width = beam_width;  // before converge.
-#endif
 
     std::vector<unsigned> mem_tags(mem_L);
     std::vector<float> mem_dists(mem_L);
 
     ANN_START_TIMING(populate_pq_dists_time, populate_t);
-#ifdef OVERLAP_INIT
     if (mem_L) {
       mem_index_->search_with_tags_fast(query, mem_L, mem_tags.data(), mem_dists.data());
       add_to_retset(mem_tags.data(), std::min((unsigned) mem_L, (unsigned) l_search), mem_dists.data());
@@ -818,17 +747,6 @@ namespace ccann {
       compute_pq_dists(&medoids[0], 1, dist_scratch, pq_coord_scratch);
       add_to_retset(&medoids[0], 1, dist_scratch);
     }
-#else
-    if (mem_L) {
-      mem_index_->search_with_tags_fast(query, mem_L, mem_tags.data(), mem_dists.data());
-      compute_pq_dists(mem_tags.data(), mem_L, dist_scratch, pq_coord_scratch);
-      add_to_retset(mem_tags.data(), std::min((_u64) mem_L, l_search), dist_scratch);
-    } else {
-      compute_pq_dists(&medoids[0], 1, dist_scratch, pq_coord_scratch);
-      add_to_retset(&medoids[0], 1, dist_scratch);
-    }
-    std::sort(retset.begin(), retset.begin() + cur_list_size);
-#endif
     ANN_END_TIMING(populate_pq_dists_time, populate_t);
 
     std::queue<comp_t> on_flight_comps;
@@ -845,7 +763,6 @@ namespace ccann {
       auto buf = sector_scratch + cur_buf_idx * size_per_io;
       auto &req = query_buf->reqs[cur_buf_idx];
       auto loc = 0;
-#ifdef FINE_GRAINED_CONCURRENCY
       if (this->on_pm) {
         loc = id2loc_func(item.id, [&](uint32_t &loc) {
           pid = loc_sector_no(loc);
@@ -863,25 +780,6 @@ namespace ccann {
         LOG(ERROR) << "Fine grained concurrency is only supported for PM index.";
         crash();
       }
-#else
-      loc = id2loc(item.id);
-      pid = loc_sector_no(loc);
-      this->lock_idx(idx_lock_table, item.id, std::vector<uint32_t>(), true);
-      req = IORequest(static_cast<_u64>(pid) * SECTOR_LEN, size_per_io, buf, u_loc_offset(loc), max_node_len);
-
-      ANN_START_TIMING(send_best_node_time, send_best_t);
-      reader->send_io(req, ctx, false);
-      ANN_ADD_STAT(send_best_node_number, 1);
-      ANN_END_TIMING(send_best_node_time, send_best_t);
-      if (passthrough_page_ref != nullptr)
-        passthrough_page_ref->push_back((static_cast<_u64>(pid) * SECTOR_LEN) / SECTOR_LEN);
-
-      // immediately read
-      id_buf_map.insert(std::make_pair(item.id, offset_to_loc((char *) req.buf, loc)));
-
-      // for PM index, unlock immediately.
-      this->unlock_idx(idx_lock_table, item.id);
-#endif
       cur_buf_idx = (cur_buf_idx + 1) % MAX_N_SECTOR_READS;
       if (stats != nullptr) {
         stats->n_ios++;
@@ -970,9 +868,7 @@ namespace ccann {
     auto cpu2_st = std::chrono::high_resolution_clock::now();
     int marker = 0, max_marker = 0;
 
-#ifndef STATIC_POLICY
     int cur_n_in = 0, cur_tot = 0;
-#endif
     ANN_INIT_TIMING(poll_t);
     ANN_INIT_TIMING(calc_best_t);
 
@@ -1001,7 +897,6 @@ namespace ccann {
       // LOG(INFO) << "Expanding node " << id << " distance " << cur_expanded_dist;
       full_retset.push_back(Neighbor(id, cur_expanded_dist, true));
 
-#ifdef EARLY_EXIT
       int start_thresh = l_search / 2;
       if (max_marker > start_thresh) {
         // uint32_t E = std::min((uint32_t) (l_search - start_thresh), 2 * k_search);
@@ -1060,7 +955,6 @@ namespace ccann {
           // }
         }
       }
-#endif
 
       ANN_END_TIMING(calc_exact_dist_time, compute_t);
 
@@ -1200,13 +1094,8 @@ namespace ccann {
                                         tsl::robin_set<uint32_t> *deleted_nodes, bool dyn_search_l) {
     std::shared_lock lk(merge_lock);
     std::vector<Neighbor> expanded_nodes_info;
-#ifdef ANN_LARGE
-    this->do_para_search_sync(query1, mem_L, l_search, beam_width, expanded_nodes_info, nullptr, stats, deleted_nodes,
-                              dyn_search_l, nullptr, k_search);
-#else
     this->do_para_search(query1, mem_L, l_search, beam_width, expanded_nodes_info, nullptr, stats, deleted_nodes,
                          dyn_search_l, nullptr, k_search);
-#endif
     // copy k_search values
     _u64 t = 0;
     for (_u64 i = 0; i < expanded_nodes_info.size() && t < k_search && i < l_search; i++) {

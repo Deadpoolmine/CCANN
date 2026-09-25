@@ -75,16 +75,11 @@ float insertion_kernel(T *data_load, ccann::DynamicSSDIndex<T, TagT> &sync_index
     sync_index.insert(data_load + dim * i, insert_vec[i]);
     success++;
     insert_latencies[i] = ((double) insert_timer.elapsed());
-#ifdef ODIN_ANN_IMMEDIATE_NO_CC
-    // merge immediately after each insert
-    merge_kernel<T, TagT>(sync_index);
-#else
     if (counter % merge_interval == 0 && counter != 0) {
       LOG(INFO) << "Merging at inserted count: " << counter;
       merge_kernel<T, TagT>(sync_index);
       counter = 0;
     }
-#endif
     counter++;
   }
 
@@ -194,13 +189,11 @@ void update(const std::string &data_bin, const unsigned L_disk, int vecs_per_ste
     inMemorySize += insert_vec.size();
   }
 
-#ifndef ODIN_ANN_IMMEDIATE_NO_CC
   if (counter % merge_interval == 0 && counter != 0) {
     LOG(INFO) << "Merging at inserted count: " << counter;
     merge_kernel<T, TagT>(sync_index);
     counter = 0;
   }
-#endif
 
   LOG(INFO) << "Total insertion time for " << (vecs_per_step * num_steps) << " points: " << total_time_secs << "s";
   LOG(INFO) << "Average insertion throughput: " << ((float) (vecs_per_step * num_steps) / total_time_secs)

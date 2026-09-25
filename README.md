@@ -80,15 +80,9 @@ The following files contain the core Soft Insert implementation and CCANN-specif
 | `src/index.cpp` | Recovery initialization, journal validation on index load |
 | `src/ssd_index.cpp` | Extended with PM-aware crash-consistent page management |
 
-### Configuration Flags
+### Build Configuration
 
-| Flag | Description |
-|------|-------------|
-| `SOFT_INSERT` | Enable Soft Insert crash-consistency protocol (core flag) |
-| `ASYNC_INSERTION` | Decouple search from insertion for zero-latency-impact consistency |
-| `FINE_GRAINED_CONCURRENCY` | Optimistic concurrent index table with crash-safe atomic operations |
-| `BATCH_PRUNING` | Reduce computation overhead during neighbor pruning |
-| `BATCH_SEARCH` | Optimize search convergence with batched expansion |
+The SSD build uses the CCANN insertion and search policy by default. Enable internal timing only when needed with `cmake -S . -B build -DCCANN_TIMING=ON`; timing is off by default.
 
 ---
 
@@ -106,18 +100,6 @@ CCANN inherits OdinANN's PM-ANN design — a PM-specific memory index with full 
   - Accelerated insertion path with PM-specific crash consistency awareness (approximate crash consistency via Soft Insert: do not need to protect many updates as they can be recomputed).
   
   - Reduced contention using optimistic concurrent index table.
-
-### Configurations
-
-- BATCH_PRUNING: Do not compute distances to all neighbors of a node at once during pruning. Instead, compute distance batch by batch until the degree is satisfied to minimize computation overhead.
-
-- ANN_TIMING: Whether to enable timing.
-
-- BATCH_SEARCH: Do not expand all neighbors of a node at once, especially when the search procedure converges. Also, do not do async read on PM, in order to mitigate lock contention and optimize CPU usage. This is because PM read can be byte-grained and very fast.
-
-- ASYNC_INSERTION: Enable asynchronous insertion with decoupled search and insertion procedures, search can perfectly overlap with insertions.
-
-- FINE_GRAINED_CONCURRENCY: Directly use atomicity of concurrent hash table without coarse-grained locks (i.e., the id2loc is visible by either old or new). For read-consistency, we wrap the id2loc lookup and neighbor retrieval in one critical section.
 
 ### Memory Index Build
 

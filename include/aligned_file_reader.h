@@ -65,14 +65,12 @@ class AlignedFileReader {
     }
   }
   inline void deref(std::vector<uint64_t> *page_ref, void *ctx) {
-#ifndef READ_ONLY_TESTS
     if (page_ref == nullptr) {
       return;
     }
     for (auto &x : *page_ref) {
       v2::cache.deref(x);
     }
-#endif
   }
 
   virtual void send_io(IORequest &reqs, void *ctx, bool write) = 0;

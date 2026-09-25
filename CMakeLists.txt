@@ -3,12 +3,10 @@ project(ccann)
 enable_testing()
 
 set(CMAKE_STANDARD 17)
-option(USE_AIO "Use AIO instead of liburing" OFF)
 option(CCANN_BUILD_PYTHON "Build the Python extension" OFF)
+option(CCANN_TIMING "Collect internal timing statistics" OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-# set(CMAKE_C_COMPILER_LAUNCHER ccache)
-# set(CMAKE_CXX_COMPILER_LAUNCHER ccache)
 
 include_directories(
 	${PROJECT_SOURCE_DIR}/include 
@@ -31,35 +29,10 @@ if(CCANN_BUILD_PYTHON)
 else()
   add_compile_options(-g -O3 -march=native -mtune=native -ftree-vectorize -funroll-loops)
 endif()
-# add_compile_options(-g -O3 -march=native -mtune=native -ftree-vectorize -funroll-loops -fsanitize=address)
-# add_compile_options(-g -O0 -march=native -mtune=native -ftree-vectorize -funroll-loops)
-# add_compile_options(-g -O3 -march=native -mtune=native -ftree-vectorize -funroll-loops -mno-avx512f -mno-avx512vl -mno-avx512bw -mno-avx512cd)
 
-message("Additional definitions: " $ENV{ADDITIONAL_DEFINITIONS})
-add_definitions(
-	$ENV{ADDITIONAL_DEFINITIONS}
-	# -DNDEBUG
-	# -DIN_PLACE_RECORD_UPDATE # disable design #1
-	# -DDIRECT_READ_CC # disable opt #1.1
-	# -DBG_IO_THREAD # enable opt #1.2
-	# -DDELTA_PRUNING # enable opt #2
-
-	# -DNO_POLLUTE_ORIGINAL
-
-	# optimizations.
-	# -DREAD_ONLY_TESTS
-	# -DNO_MAPPING # starling: must disable this!
-	-DOVERLAP_INIT
-	-DDYN_PIPE_WIDTH
-	
-	# policy.
-	# -DSTATIC_POLICY
-
-	# unoptimizations.
-	# -DNAIVE_PIPE
-
-	-DUSE_BS_THREAD_POOL
-)
+if(CCANN_TIMING)
+    add_definitions(-DANN_TIMING)
+endif()
 
 include_directories(
 	${PROJECT_SOURCE_DIR}/third_party/liburing/src/include
@@ -70,14 +43,7 @@ link_directories(
 	${PROJECT_SOURCE_DIR}/third_party/liburing/src
 )
 
-if(USE_AIO)
-	message(STATUS "Using AIO for asynchronous I/O, compatible but slower.")
-	link_libraries(aio)
-	add_definitions(-DUSE_AIO)
-else()
-	message(STATUS "Using liburing for asynchronous I/O, faster but requires kernel support.")
-	link_libraries(uring)
-endif()
+link_libraries(uring)
 
 message(STATUS "Link with URCU")
 link_libraries(
@@ -87,10 +53,6 @@ link_libraries(
 link_libraries(
 	tbb
 )
-# add_compile_options(-fsanitize=address,undefined -lasan -lubsan)
-# add_link_options(-fsanitize=address,undefined)
-# add_compile_options(-fsanitize=undefined -lubsan)
-# add_link_options(-fsanitize=undefined)
 
 # check for AVX512 and AVX2, add the corresponding definitions.
 # First, for the compiler.
