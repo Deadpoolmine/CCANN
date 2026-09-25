@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <system_error>
 #include <tuple>
 #include "timer.h"
 #include "tsl/robin_map.h"
@@ -46,11 +47,11 @@ namespace ccann {
     libcuckoo::cuckoohash_map<uint32_t, uint32_t> id_map;                       // old_id -> new_id
     libcuckoo::cuckoohash_map<uint32_t, std::vector<uint32_t>> deleted_nhoods;  // id -> nhood
     std::atomic<uint64_t> new_npoints = 0;
+    uint32_t first_live_id = kInvalidID;
     Timer delete_timer;
 
     char *rbuf = nullptr, *wbuf = nullptr;
     alloc_aligned((void **) &rbuf, SECTORS_PER_MERGE * SECTOR_LEN, SECTOR_LEN);
-    alloc_aligned((void **) &wbuf, 2 * SECTORS_PER_MERGE * SECTOR_LEN, SECTOR_LEN);  // sliding window buffer.
     uint64_t n_sectors = (cur_loc + nnodes_per_sector - 1) / nnodes_per_sector;
     // LOG(INFO) << "Cur loc: " << cur_loc.load() << ", cur ID: " << cur_id << ", n_sectors: " << n_sectors
     //           << ", nnodes_per_sector: " << nnodes_per_sector;
@@ -78,6 +79,7 @@ namespace ccann {
         if (deleted_nodes_set.find(tag) == deleted_nodes_set.end()) {  // 2. not deleted, alloc ID.
           // allocate ID.
           uint64_t new_id = new_npoints.fetch_add(1);
+          if (new_id == 0) first_live_id = id;
           id_map.insert(id, new_id);
           continue;
         }
@@ -101,11 +103,17 @@ namespace ccann {
         deleted_nhoods.insert(id, nhood);
       }
     }
+    if (new_npoints == 0) {
+      aligned_free((void *) rbuf);
+      throw std::invalid_argument("Cannot merge an index with no live points");
+    }
+    alloc_aligned((void **) &wbuf, 2 * SECTORS_PER_MERGE * SECTOR_LEN, SECTOR_LEN);  // sliding window buffer.
     // LOG(INFO) << "Finished populating neighborhoods, totally elapsed: " << delete_timer.elapsed() / 1e3
     //           << "ms, new npoints: " << new_npoints.load() << " " << "id_map size: " << id_map.size();
 
     // Step 2: prune neighbors, populate PQ and tags.
-    int fd = open(disk_index_out.c_str(), O_DIRECT | O_LARGEFILE | O_RDWR | O_CREAT, 0755);
+    int fd = open(disk_index_out.c_str(), O_LARGEFILE | O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) throw std::system_error(errno, std::generic_category(), "open merged index");
     const uint64_t kVecInWBuf = 2 * SECTORS_PER_MERGE * nnodes_per_sector;
     uint64_t wb_id = 0;
     std::atomic<uint64_t> n_used_id = 0;
@@ -117,7 +125,16 @@ namespace ccann {
       uint64_t id_delta = std::min((uint64_t) SECTORS_PER_MERGE * nnodes_per_sector, n_used_id - wb_id);
       write_reqs.push_back(IORequest(loc_sector_no(wb_id) * SECTOR_LEN,
                                      ROUND_UP(id_delta, nnodes_per_sector) / nnodes_per_sector * size_per_io, b, 0, 0));
-      reader->write_fd(fd, write_reqs, ctx);
+      for (const auto &request : write_reqs) {
+        size_t written = 0;
+        while (written < request.len) {
+          auto n = pwrite(fd, static_cast<const char *>(request.buf) + written, request.len - written,
+                          request.offset + written);
+          if (n < 0 && errno == EINTR) continue;
+          if (n <= 0) throw std::system_error(n < 0 ? errno : EIO, std::generic_category(), "write merged index");
+          written += n;
+        }
+      }
       wb_id += id_delta;
       // LOG(INFO) << "Write back " << wb_id << "/" << n_used_id << " IDs.";
     };
@@ -212,43 +229,24 @@ namespace ccann {
     while (wb_id < n_used_id) {
       write_back();
     }
+    if (fsync(fd) != 0) throw std::system_error(errno, std::generic_category(), "sync merged index");
     // LOG(INFO) << "Write nhoods finished, totally elapsed " << delete_timer.elapsed() / 1e3 << "ms.";
 
     uint32_t medoid = this->medoids[0];
     while (deleted_nodes_set.find(id2tag(medoid)) != deleted_nodes_set.end()) {
       LOG(INFO) << "Medoid deleted. Choosing another start node.";
       const auto &nhoods = deleted_nhoods.find(medoid);
-      medoid = nhoods[0];
+      medoid = nhoods.empty() ? first_live_id : nhoods[0];
     }
     close(fd);
     // free buf
     aligned_free((void *) rbuf);
     aligned_free((void *) wbuf);
 
-    // set metadata, PQ and tags.
-    merge_lock.lock();  // unlock in reload().
-    // TODO: do we need support delete?
-    // metadata.
-    this->num_points = new_npoints;
-    this->medoids[0] = id_map.find(medoid);
-    // PQ.
-    this->data = std::move(pq_coords);
-    // tags.
-    tags.clear();
-    id2loc_.clear();
-    page_layout.clear();
-#pragma omp parallel for num_threads(nthreads)
-    for (size_t i = 0; i < new_tags.size(); ++i) {
-      tags.insert_or_assign(i, new_tags[i]);
-      // TODO(gh): use partition data to init id2loc_ and page_layout.
-      id2loc_.insert_or_assign(i, i);
-      set_loc2id(i, i);
-    }
-
-    this->write_metadata_and_pq(in_path_prefix, out_path_prefix, new_npoints, id_map.find(medoid), &new_tags);
+    this->write_metadata_and_pq(in_path_prefix, out_path_prefix, new_npoints, id_map.find(medoid), &new_tags,
+                                pq_coords);
     // LOG(INFO) << "Write metadata and PQ finished, totally elapsed " << delete_timer.elapsed() / 1e3 << "ms.";
     // LOG(INFO) << "Write metadata finished, totally elapsed " << delete_timer.elapsed() / 1e3 << "ms.";
-    merge_lock.unlock();
 
     ANN_END_TIMING(merge_time, merge_t);
   }
@@ -337,7 +335,7 @@ namespace ccann {
   template<typename T, typename TagT>
   void SSDIndex<T, TagT>::write_metadata_and_pq(const std::string &in_path_prefix, const std::string &out_path_prefix,
                                                 const uint64_t &new_npoints, const uint64_t &new_medoid,
-                                                std::vector<TagT> *new_tags) {
+                                                std::vector<TagT> *new_tags, std::vector<uint8_t> &pq_coords) {
     uint64_t file_size = SECTOR_LEN + ROUND_UP(new_npoints, nnodes_per_sector) / nnodes_per_sector * SECTOR_LEN;
     std::vector<uint64_t> output_metadata;
     output_metadata.push_back(new_npoints);
@@ -371,7 +369,7 @@ namespace ccann {
 
     // write PQ pivots.
     std::string pq_out = out_path_prefix + "_pq_compressed.bin";
-    ccann::save_bin<uint8_t>(pq_out, this->data.data(), new_npoints, n_chunks);
+    ccann::save_bin<uint8_t>(pq_out, pq_coords.data(), new_npoints, n_chunks);
 
     if (in_path_prefix != out_path_prefix) {
       std::filesystem::copy(in_path_prefix + "_pq_pivots.bin", out_path_prefix + "_pq_pivots.bin",

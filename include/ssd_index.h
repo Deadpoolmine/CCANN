@@ -967,7 +967,7 @@ namespace ccann {
 
     void write_metadata_and_pq(const std::string &in_path_prefix, const std::string &out_path_prefix,
                                const uint64_t &new_npoints, const uint64_t &new_medoid,
-                               std::vector<TagT> *new_tags = nullptr);
+                               std::vector<TagT> *new_tags, std::vector<uint8_t> &pq_coords);
     void write_metadata_and_pq_incremental(const std::string &in_path_prefix, const std::string &out_path_prefix,
                                            unsigned long last_id, unsigned num_new_points);
 

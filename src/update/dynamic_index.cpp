@@ -381,8 +381,8 @@ namespace ccann {
   void DynamicSSDIndex<T, TagT>::save_del_set() {
     int nxt_idx = 1 - active_delete_set, cur_idx = active_delete_set;
     std::unique_lock<std::shared_timed_mutex> lock(delete_lock);
-    deletion_sets[nxt_idx].clear();
-    deleted_tags[nxt_idx].clear();
+    deletion_sets[nxt_idx] = deletion_sets[cur_idx];
+    deleted_tags[nxt_idx] = deleted_tags[cur_idx];
     bool expected_active = false;
 #ifndef ODIN_ANN_IMMEDIATE_NO_CC
     if (active_del[nxt_idx].compare_exchange_strong(expected_active, true)) {
@@ -403,9 +403,8 @@ namespace ccann {
     ccann::Timer timer;
     merge(nthreads, n_sampled_nbrs);
 
-    // TODO(gh): do we really need to reload disk index?
-    // std::swap(_disk_index_prefix_in, _disk_index_prefix_out);
-    // _disk_index->reload(_disk_index_prefix_in.c_str(), _num_threads);
+    // The active instance still reads the source generation; its deletion set
+    // remains cumulative until a new instance opens the compacted output.
 #ifndef ODIN_ANN_IMMEDIATE_NO_CC
     LOG(INFO) << "Merge time : " << timer.elapsed() / 1000 << " ms";
 #endif

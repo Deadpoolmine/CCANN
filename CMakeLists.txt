@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.0)
 project(ccann)
+enable_testing()
 
 set(CMAKE_STANDARD 17)
 option(USE_AIO "Use AIO instead of liburing" OFF)

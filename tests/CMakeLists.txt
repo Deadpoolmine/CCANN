@@ -59,3 +59,7 @@ target_link_libraries(insert_merge ${PROJECT_NAME} )
 
 add_executable(quick_start quick_start.cpp)
 target_link_libraries(quick_start ${PROJECT_NAME})
+
+add_executable(delete_merge_regression delete_merge_regression.cpp)
+target_link_libraries(delete_merge_regression ${PROJECT_NAME})
+add_test(NAME delete_merge_regression COMMAND delete_merge_regression)
