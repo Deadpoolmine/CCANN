@@ -169,19 +169,45 @@ def test_recover_after_process_kill(tmp_path, empty):
 
     script = """
 import os, signal, sys
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import ccannpy
 index = ccannpy.Index.load(sys.argv[1], threads=2)
 index.add(np.full(64, 7, dtype=np.float32), 9001)
+vectors = np.eye(8, 64, dtype=np.float32) * 20
+with ThreadPoolExecutor(max_workers=4) as pool:
+    list(pool.map(lambda item: index.add(*item), zip(vectors, range(9010, 9018))))
 os.kill(os.getpid(), signal.SIGKILL)
 """
     result = subprocess.run([sys.executable, "-c", script, prefix], check=False, timeout=20)
     assert result.returncode == -signal.SIGKILL
     restored = ccannpy.Index.load(prefix, threads=2)
-    assert restored.npoints == len(vectors) + 1
-    ids, distances = restored.search(np.full(64, 7, dtype=np.float32), 1)
-    assert ids[0] == 9001
-    assert distances[0] == 0
+    assert restored.npoints == len(vectors) + 9
+    inserted = [(9001, np.full(64, 7, dtype=np.float32))]
+    inserted.extend((9010 + offset, vector) for offset, vector in
+                    enumerate(np.eye(8, 64, dtype=np.float32) * 20))
+    if empty:
+        for tag, vector in inserted:
+            ids, distances = restored.search(vector, 1)
+            assert ids[0] == tag
+            assert distances[0] == 0
+    else:
+        metadata = np.fromfile(prefix + "_disk.index", dtype=np.uint64, count=5, offset=8)
+        node_size, nodes_per_sector = map(int, metadata[3:5])
+        count = int(np.fromfile(prefix + "_disk.index.tags", dtype=np.uint32, count=1)[0])
+        persisted_tags = np.fromfile(prefix + "_disk.index.tags", dtype=np.uint32,
+                                     count=count, offset=8)
+        locations = np.fromfile(prefix + "_disk.index.id2loc", dtype=np.uint32, count=count)
+        assert count == len(vectors) + len(inserted)
+        for tag, vector in inserted:
+            matches = np.flatnonzero(persisted_tags == tag)
+            assert len(matches) == 1
+            location = int(locations[matches[0]])
+            node_offset = ((1 + location // nodes_per_sector) * 4096 +
+                           location % nodes_per_sector * node_size)
+            persisted_vector = np.fromfile(prefix + "_disk.index", dtype=np.float32,
+                                           count=64, offset=node_offset)
+            np.testing.assert_array_equal(persisted_vector, vector)
 
 
 def test_empty_index_truncates_incomplete_record(tmp_path):
