@@ -773,10 +773,8 @@ namespace ccann {
       entries.reserve(num_points);
       for (uint32_t id = 0; id < num_points; ++id) {
         uint32_t loc = locations[id];
-        if (id == 0 || loc != 0) {
-          entries.emplace_back(id, loc);
-          max_loc = std::max(max_loc, loc);
-        }
+        entries.emplace_back(id, loc);
+        max_loc = std::max(max_loc, loc);
       }
       id2loc_writer->put_dax();
       this->id2loc_.clear();

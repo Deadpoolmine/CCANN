@@ -116,10 +116,16 @@ class PySSDIndex {
     validate_vector(query);
     if (k == 0 || search_l < k || search_l > 4096)
       throw py::value_error("Require 0 < k <= search_l <= 4096");
-    std::lock_guard<std::mutex> lock(mu_);
     py::array_t<uint32_t> ids(k);
     py::array_t<float> distances(k);
-    index_->search(query.data(), k, 0, search_l, 4, ids.mutable_data(), distances.mutable_data(), nullptr);
+    const auto *query_data = query.data();
+    auto *ids_data = ids.mutable_data();
+    auto *distances_data = distances.mutable_data();
+    {
+      py::gil_scoped_release release;
+      std::lock_guard<std::mutex> lock(mu_);
+      index_->search(query_data, k, 0, search_l, 4, ids_data, distances_data, nullptr);
+    }
     return py::make_tuple(ids, distances);
   }
 

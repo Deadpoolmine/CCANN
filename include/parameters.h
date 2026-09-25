@@ -1,4 +1,5 @@
 #pragma once
+#include <memory>
 #include <sstream>
 #include <typeinfo>
 #include <unordered_map>
@@ -7,22 +8,13 @@ namespace ccann {
 
   class Parameters {
    public:
-    Parameters() {
-      int *p = (int *) malloc(sizeof(int));
-      *p = 0;
-      params["num_threads"] = p;
-    }
+    Parameters() { Set<int>("num_threads", 0); }
 
     template<typename ParamType>
     inline void Set(const std::string &name, const ParamType &value) {
-      //      ParamType *ptr = (ParamType *) malloc(sizeof(ParamType));
-      ParamType *ptr = (ParamType *) malloc(sizeof(ParamType));
-      *ptr = value;
-      if (params.find(name) != params.end()) {
-        free(params[name]);
-      }
-
-      params[name] = (void *) ptr;
+      params[name] = std::shared_ptr<void>(new ParamType(value), [](void *ptr) {
+        delete static_cast<ParamType *>(ptr);
+      });
     }
 
     template<typename ParamType>
@@ -35,7 +27,7 @@ namespace ccann {
         if (item->second == nullptr) {
           throw std::invalid_argument(std::string("Parameter ") + name + " has value null.");
         } else {
-          return *(static_cast<ParamType *>(item->second));
+          return *(static_cast<ParamType *>(item->second.get()));
         }
       }
     }
@@ -49,16 +41,10 @@ namespace ccann {
       }
     }
 
-    ~Parameters() {
-      for (auto iter = params.begin(); iter != params.end(); iter++) {
-        if (iter->second != nullptr) {
-          free(iter->second);
-        }
-      }
-    }
+    ~Parameters() = default;
 
    private:
-    std::unordered_map<std::string, void *> params;
+    std::unordered_map<std::string, std::shared_ptr<void>> params;
 
     Parameters(const Parameters &);
     Parameters &operator=(const Parameters &);

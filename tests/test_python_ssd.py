@@ -1,9 +1,19 @@
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import numpy as np
 import pytest
 
 import ccannpy
+
+
+@pytest.fixture
+def ssd_index(tmp_path):
+    rng = np.random.default_rng(17)
+    vectors = rng.random((300, 64), dtype=np.float32)
+    tags = np.arange(1000, 1300, dtype=np.uint32)
+    prefix = str(tmp_path / "index")
+    return prefix, vectors, tags
 
 
 def test_ssd_python_round_trip(tmp_path):
@@ -44,3 +54,76 @@ def test_ssd_python_round_trip(tmp_path):
         file.write(b"\x00\x00\x00\x00")
     with pytest.raises(ValueError, match="Corrupt"):
         ccannpy.Index.load(prefix)
+
+
+def test_multithreaded_insert_and_search_survive_restart(ssd_index):
+    prefix, vectors, tags = ssd_index
+    index = ccannpy.Index.create(prefix, vectors, tags, threads=4)
+    new_vectors = np.eye(12, 64, dtype=np.float32) * 5
+    new_tags = range(2000, 2012)
+    valid_tags = set(range(1000, 1300)) | set(new_tags)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda item: index.add(*item), zip(new_vectors, new_tags)))
+
+    def search_one(active_index, vector):
+        ids, distances = active_index.search(vector, 5)
+        assert ids.shape == distances.shape == (5,)
+        assert set(ids).issubset(valid_tags)
+        assert np.all(np.isfinite(distances))
+        assert np.all(np.diff(distances) >= -1e-5)
+        return ids
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda vector: search_one(index, vector), new_vectors))
+        base_results = list(pool.map(lambda vector: search_one(index, vector), vectors[:12]))
+    assert sum(1000 + offset in ids for offset, ids in enumerate(base_results)) >= 8
+
+    assert index.npoints == 312
+    index.save()
+    del index
+    persisted_tags = np.fromfile(prefix + "_disk.index.tags", dtype=np.uint32)[2:]
+    assert set(new_tags).issubset(set(persisted_tags))
+    restored = ccannpy.Index.load(prefix, threads=4)
+    assert restored.npoints == 312
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda vector: search_one(restored, vector), new_vectors))
+
+
+def test_multithreaded_search_while_inserting(ssd_index):
+    prefix, vectors, tags = ssd_index
+    index = ccannpy.Index.create(prefix, vectors, tags, threads=4)
+    barrier = Barrier(4)
+    new_vectors = np.eye(8, 64, dtype=np.float32) * 5
+
+    def insert_batch(start):
+        barrier.wait()
+        for offset in range(start, start + 4):
+            index.add(new_vectors[offset], 3000 + offset)
+
+    def search_batch(start):
+        barrier.wait()
+        for offset in range(start, start + 8):
+            query_id = offset % 8
+            ids, distances = index.search(vectors[query_id], 5)
+            assert ids.shape == distances.shape == (5,)
+            assert np.all(np.isfinite(distances))
+            assert np.all(np.diff(distances) >= -1e-5)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(insert_batch, 0), pool.submit(insert_batch, 4),
+                   pool.submit(search_batch, 0), pool.submit(search_batch, 8)]
+        for future in futures:
+            future.result(timeout=15)
+
+    assert index.npoints == 308
+    index.save()
+    del index
+    persisted_tags = np.fromfile(prefix + "_disk.index.tags", dtype=np.uint32)[2:]
+    assert set(range(3000, 3008)).issubset(set(persisted_tags))
+    restored = ccannpy.Index.load(prefix, threads=4)
+    assert restored.npoints == 308
+    for vector in new_vectors:
+        ids, _ = restored.search(vector, 5)
+        assert ids.shape == (5,)
+        assert set(ids).issubset(set(range(1000, 1300)) | set(range(3000, 3008)))
