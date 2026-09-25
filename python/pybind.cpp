@@ -2,10 +2,13 @@
 #include <pybind11/pybind11.h>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
 #include <stdexcept>
+#include <system_error>
+#include <cerrno>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -95,9 +98,9 @@ class PySSDIndex {
     std::vector<uint32_t> persisted_tags;
     ccann::load_bin<uint32_t>(prefix + "_disk.index.tags", persisted_tags, count, loaded_tag_dim);
     result->known_tags_.insert(persisted_tags.begin(), persisted_tags.end());
-    std::ifstream removed(prefix + "_ccann.removed");
-    uint32_t tag;
-    while (removed >> tag) {
+    for (uint32_t tag : read_removed(prefix + "_ccann.removed")) {
+      if (!result->known_tags_.count(tag))
+        throw py::value_error("Deletion log contains an unknown tag");
       result->removed_.insert(tag);
       result->index_->lazy_delete(tag);
     }
@@ -133,15 +136,39 @@ class PySSDIndex {
     std::lock_guard<std::mutex> lock(mu_);
     if (!known_tags_.count(tag))
       throw py::value_error("Tag does not exist");
+    if (removed_.count(tag)) return;
+    append_removed(tag);
     removed_.insert(tag);
     index_->lazy_delete(tag);
-    persist_removed();
   }
 
-  void save() {
+  void merge(const std::string &output_prefix) {
     std::lock_guard<std::mutex> lock(mu_);
+    if (output_prefix == prefix_ || std::filesystem::exists(output_prefix + "_disk.index") ||
+        std::filesystem::exists(output_prefix + "_ccann.meta") ||
+        std::filesystem::exists(output_prefix + "_ccann.flat"))
+      throw py::value_error("Merge output prefix already exists");
     index_->_disk_index->flush_commits();
-    persist_removed();
+    auto deleted = read_removed(prefix_ + "_ccann.removed");
+    std::vector<uint32_t> tags(deleted.begin(), deleted.end());
+    tsl::robin_set<uint32_t> tag_set(deleted.begin(), deleted.end());
+    index_->_disk_index->merge_deletes(prefix_, output_prefix, tags, tag_set, threads_, 20);
+    for (const char *suffix : {"_disk.index", "_disk.index.tags", "_pq_compressed.bin", "_pq_pivots.bin"})
+      sync_file(output_prefix + suffix);
+    std::string meta_path = output_prefix + "_ccann.meta";
+    int fd = ::open(meta_path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
+    if (fd < 0) throw std::system_error(errno, std::generic_category(), "open merged metadata");
+    std::string meta = std::to_string(dim_) + " " + std::to_string(static_cast<int>(metric_)) + "\n";
+    try {
+      write_all(fd, meta);
+      if (::fsync(fd) != 0)
+        throw std::system_error(errno, std::generic_category(), "sync merged metadata");
+    } catch (...) {
+      ::close(fd);
+      throw;
+    }
+    ::close(fd);
+    sync_directory(meta_path);
   }
 
   uint64_t npoints() const {
@@ -155,28 +182,95 @@ class PySSDIndex {
   PySSDIndex(std::string prefix, uint32_t dim, ccann::Metric metric, uint32_t threads)
       : prefix_(std::move(prefix)), dim_(dim), metric_(metric), threads_(threads) {}
 
-  void persist_removed() {
-    std::string pending = prefix_ + "_ccann.removed.tmp";
-    {
-      std::ofstream file(pending, std::ios::trunc);
-      for (uint32_t tag : removed_)
-        file << tag << '\n';
-      if (!file)
-        throw std::runtime_error("Failed to write removed tags");
+  static void write_all(int fd, const std::string &data) {
+    size_t offset = 0;
+    while (offset < data.size()) {
+      ssize_t written = ::write(fd, data.data() + offset, data.size() - offset);
+      if (written < 0 && errno == EINTR) continue;
+      if (written <= 0)
+        throw std::system_error(written < 0 ? errno : EIO, std::generic_category(), "write index file");
+      offset += written;
     }
-    int fd = ::open(pending.c_str(), O_RDONLY);
-    if (fd < 0 || ::fsync(fd) != 0) {
-      if (fd >= 0) ::close(fd);
-      throw std::runtime_error("Failed to sync removed tags");
-    }
+  }
+
+  static void sync_file(const std::string &path) {
+    int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) throw std::system_error(errno, std::generic_category(), "open index file for sync");
+    int result = ::fsync(fd);
+    int saved_errno = errno;
     ::close(fd);
-    std::filesystem::rename(pending, prefix_ + "_ccann.removed");
-    auto parent = std::filesystem::path(prefix_).parent_path();
+    if (result != 0)
+      throw std::system_error(saved_errno, std::generic_category(), "sync index file");
+  }
+
+  static void sync_directory(const std::string &path) {
+    auto parent = std::filesystem::path(path).parent_path();
     if (parent.empty()) parent = ".";
-    fd = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY);
-    if (fd < 0 || ::fsync(fd) != 0) {
-      if (fd >= 0) ::close(fd);
-      throw std::runtime_error("Failed to sync index directory");
+    int fd = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY);
+    if (fd < 0) throw std::system_error(errno, std::generic_category(), "open index directory");
+    int result = ::fsync(fd);
+    int saved_errno = errno;
+    ::close(fd);
+    if (result != 0)
+      throw std::system_error(saved_errno, std::generic_category(), "sync index directory");
+  }
+
+  static std::set<uint32_t> read_removed(const std::string &path) {
+    std::set<uint32_t> tags;
+    if (!std::filesystem::exists(path)) return tags;
+    std::ifstream file(path, std::ios::binary);
+    if (!file) throw std::runtime_error("Failed to open deletion log");
+    uint64_t valid_size = 0;
+    std::string line;
+    while (std::getline(file, line)) {
+      if (file.eof()) break;
+      size_t parsed = 0;
+      uint64_t value;
+      try {
+        value = std::stoull(line, &parsed);
+      } catch (const std::exception &) {
+        throw py::value_error("Corrupt deletion log");
+      }
+      if (parsed != line.size() || value > std::numeric_limits<uint32_t>::max())
+        throw py::value_error("Corrupt deletion log");
+      tags.insert(static_cast<uint32_t>(value));
+      valid_size += line.size() + 1;
+    }
+    if (file.bad()) throw std::runtime_error("Failed to read deletion log");
+    file.close();
+    if (valid_size != std::filesystem::file_size(path)) {
+      if (::truncate(path.c_str(), valid_size) != 0)
+        throw std::system_error(errno, std::generic_category(), "repair deletion log");
+      sync_file(path);
+    }
+    return tags;
+  }
+
+  void append_removed(uint32_t tag) {
+    std::string path = prefix_ + "_ccann.removed";
+    bool created = !std::filesystem::exists(path);
+    int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd < 0) throw std::system_error(errno, std::generic_category(), "open deletion log");
+    if (created) {
+      try {
+        sync_directory(path);
+      } catch (...) {
+        ::close(fd);
+        throw;
+      }
+    }
+    off_t start = ::lseek(fd, 0, SEEK_END);
+    try {
+      if (start < 0) throw std::system_error(errno, std::generic_category(), "seek deletion log");
+      write_all(fd, std::to_string(tag) + "\n");
+      if (::fsync(fd) != 0)
+        throw std::system_error(errno, std::generic_category(), "sync deletion log");
+    } catch (...) {
+      if (start >= 0) {
+        if (::ftruncate(fd, start) == 0) ::fsync(fd);
+      }
+      ::close(fd);
+      throw;
     }
     ::close(fd);
   }
@@ -231,7 +325,8 @@ PYBIND11_MODULE(_native, m) {
       .def("search", &PySSDIndex::search, py::arg("query").noconvert(), py::arg("k"),
            py::arg("search_l") = 64)
       .def("remove", &PySSDIndex::remove)
-      .def("save", &PySSDIndex::save)
+      .def("merge", &PySSDIndex::merge, py::arg("output_prefix"),
+           py::call_guard<py::gil_scoped_release>())
       .def_property_readonly("npoints", &PySSDIndex::npoints)
       .def_property_readonly("dimension", &PySSDIndex::dimension);
 }

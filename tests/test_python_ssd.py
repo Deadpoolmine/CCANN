@@ -40,7 +40,7 @@ def test_ssd_python_round_trip(tmp_path):
         index.add(vectors[0], 1000)
     with pytest.raises(ValueError):
         index.add(np.zeros(32, dtype=np.float32), 2001)
-    index.save()
+    assert not hasattr(index, "save")
     del index
 
     loaded = ccannpy.Index.load(prefix, threads=2)
@@ -83,7 +83,6 @@ def test_multithreaded_insert_and_search_survive_restart(ssd_index):
     assert sum(1000 + offset in ids for offset, ids in enumerate(base_results)) >= 8
 
     assert index.npoints == 312
-    index.save()
     del index
     persisted_tags = np.fromfile(prefix + "_disk.index.tags", dtype=np.uint32)[2:]
     assert set(new_tags).issubset(set(persisted_tags))
@@ -120,7 +119,6 @@ def test_multithreaded_search_while_inserting(ssd_index):
             future.result(timeout=15)
 
     assert index.npoints == 308
-    index.save()
     del index
     persisted_tags = np.fromfile(prefix + "_disk.index.tags", dtype=np.uint32)[2:]
     assert set(range(3000, 3008)).issubset(set(persisted_tags))
@@ -148,7 +146,7 @@ def test_insert_from_empty_and_reload(tmp_path):
     assert ids[0] == 12
     assert distances[0] == 0
     index.remove(11)
-    index.save()
+    assert not hasattr(index, "save")
     del index
 
     restored = ccannpy.Index.load(prefix, threads=2)
@@ -204,3 +202,86 @@ def test_empty_index_truncates_incomplete_record(tmp_path):
     loaded = ccannpy.Index.load(prefix)
     assert loaded.npoints == 2
     assert set(loaded.search(vector, 2)[0]) == {41, 42}
+
+
+def test_graph_remove_appends_log_and_repairs_incomplete_tail(ssd_index):
+    prefix, vectors, tags = ssd_index
+    index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
+    log = prefix + "_ccann.removed"
+    index.remove(1000)
+    first = open(log, "rb").read()
+    assert first == b"1000\n"
+    index.remove(1001)
+    assert open(log, "rb").read() == first + b"1001\n"
+    index.remove(1001)
+    assert open(log, "rb").read() == first + b"1001\n"
+    del index
+
+    with open(log, "ab") as file:
+        file.write(b"1002")
+    restored = ccannpy.Index.load(prefix, threads=2)
+    assert restored.npoints == 298
+    restored.remove(1003)
+    assert open(log, "rb").read() == b"1000\n1001\n1003\n"
+    del restored
+    assert ccannpy.Index.load(prefix, threads=2).npoints == 297
+
+
+def test_graph_remove_survives_process_kill_and_merge(ssd_index, tmp_path):
+    prefix, vectors, tags = ssd_index
+    index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
+    del index
+
+    script = """
+import os, signal, sys
+import ccannpy
+index = ccannpy.Index.load(sys.argv[1], threads=2)
+index.remove(1000)
+os.kill(os.getpid(), signal.SIGKILL)
+"""
+    result = subprocess.run([sys.executable, "-c", script, prefix], check=False, timeout=20)
+    assert result.returncode == -signal.SIGKILL
+    restored = ccannpy.Index.load(prefix, threads=2)
+    assert restored.npoints == 299
+    restored.remove(1001)
+    restored.add(np.full(64, 7, dtype=np.float32), 9001)
+    output = str(tmp_path / "merged")
+    compacted = restored.merge(output)
+    assert restored.npoints == 299
+    assert compacted.npoints == 299
+    assert not (tmp_path / "merged_ccann.removed").exists()
+    with open(output + "_disk.index.tags", "rb") as file:
+        count, width = np.fromfile(file, dtype=np.uint32, count=2)
+        assert width == 1
+        persisted = np.fromfile(file, dtype=np.uint32, count=int(count))
+    assert len(persisted) == 299
+    assert 1000 not in persisted and 1001 not in persisted and 9001 in persisted
+    del compacted
+    reloaded = ccannpy.Index.load(output, threads=2)
+    assert reloaded.npoints == 299
+    assert reloaded.search(np.full(64, 7, dtype=np.float32), 1)[0][0] == 9001
+    restored.remove(1002)
+    second_output = str(tmp_path / "merged_again")
+    again = restored.merge(second_output)
+    assert again.npoints == 298
+    with open(second_output + "_disk.index.tags", "rb") as file:
+        count, _ = np.fromfile(file, dtype=np.uint32, count=2)
+        second_tags = np.fromfile(file, dtype=np.uint32, count=int(count))
+    assert 1002 not in second_tags
+    assert 1002 in persisted
+
+
+def test_empty_index_merge_compacts_deleted_records(tmp_path):
+    prefix = str(tmp_path / "empty")
+    index = ccannpy.Index.create(prefix, np.empty((0, 4), dtype=np.float32),
+                                 np.empty(0, dtype=np.uint32))
+    for tag in range(5):
+        index.add(np.full(4, tag, dtype=np.float32), tag)
+    index.remove(1)
+    index.remove(3)
+    output = str(tmp_path / "merged")
+    compacted = index.merge(output)
+    assert compacted.npoints == 3
+    assert ccannpy.Index.load(output).npoints == 3
+    assert set(compacted.search(np.zeros(4, dtype=np.float32), 3)[0]) == {0, 2, 4}
+    assert (tmp_path / "merged_ccann.flat").stat().st_size < (tmp_path / "empty_ccann.flat").stat().st_size

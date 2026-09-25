@@ -2,6 +2,7 @@
 
 import os
 import struct
+import tempfile
 import threading
 import zlib
 
@@ -145,9 +146,28 @@ class _FlatIndex:
                 self._append(2, tag, np.zeros(self._dimension, dtype=np.float32))
                 del self._vectors[tag]
 
-    def save(self):
+    def merge(self, output_prefix):
         with self._lock:
-            os.fsync(self._fd)
+            path = output_prefix + "_ccann.flat"
+            if os.path.exists(path) or os.path.exists(output_prefix + "_disk.index"):
+                raise ValueError("Merge output prefix already exists")
+            directory = os.path.dirname(path) or "."
+            fd, temporary = tempfile.mkstemp(prefix=".ccann-merge-", dir=directory)
+            try:
+                _write_all(fd, _HEADER.pack(_MAGIC, self._dimension))
+                for tag, vector in self._vectors.items():
+                    body = _RECORD_HEAD.pack(1, tag) + vector.tobytes()
+                    _write_all(fd, body + _CHECKSUM.pack(zlib.crc32(body)))
+                os.fsync(fd)
+                os.link(temporary, path)
+                directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            finally:
+                os.close(fd)
+                os.unlink(temporary)
 
     @property
     def npoints(self):
@@ -165,8 +185,9 @@ class _FlatIndex:
 
 
 class Index:
-    def __init__(self, backend):
+    def __init__(self, backend, threads=4):
         self._backend = backend
+        self._threads = threads
 
     @classmethod
     def create(cls, prefix, vectors, tags, metric=Metric.L2, threads=4):
@@ -177,21 +198,25 @@ class Index:
                     not isinstance(tags, np.ndarray) or tags.dtype != np.uint32 or
                     tags.shape != (0,)):
                 raise ValueError("Expected empty float32 vectors and uint32 tags")
-            return cls(_FlatIndex.create(prefix, vectors.shape[1]))
+            return cls(_FlatIndex.create(prefix, vectors.shape[1]), threads)
         if os.path.exists(prefix + "_ccann.flat"):
             raise ValueError("Index already exists at prefix")
-        return cls(_NativeIndex.create(prefix, vectors, tags, metric, threads))
+        return cls(_NativeIndex.create(prefix, vectors, tags, metric, threads), threads)
 
     @classmethod
     def load(cls, prefix, metric=Metric.L2, threads=4):
         if os.path.exists(prefix + "_ccann.flat"):
             if not threads or metric != Metric.L2:
                 raise ValueError("Only L2 and positive threads are supported")
-            return cls(_FlatIndex.load(prefix))
-        return cls(_NativeIndex.load(prefix, metric, threads))
+            return cls(_FlatIndex.load(prefix), threads)
+        return cls(_NativeIndex.load(prefix, metric, threads), threads)
 
     def __getattr__(self, name):
         return getattr(self._backend, name)
+
+    def merge(self, output_prefix):
+        self._backend.merge(output_prefix)
+        return self.load(output_prefix, threads=self._threads)
 
 
 __all__ = ["Index", "Metric"]
