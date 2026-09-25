@@ -1,4 +1,3 @@
-#include "libpmem.h"
 #ifndef USE_AIO
 #include "linux_aligned_file_reader.h"
 
@@ -196,6 +195,22 @@ namespace ioctx {
   static thread_local std::unique_ptr<io_uring_ctx> ring = nullptr;
 };  // namespace ioctx
 
+namespace {
+  thread_local uint32_t dax_rcu_depth = 0;
+
+  void enter_dax_rcu() {
+    if (dax_rcu_depth++ == 0)
+      rcu_register_thread();
+    rcu_read_lock();
+  }
+
+  void leave_dax_rcu() {
+    rcu_read_unlock();
+    if (--dax_rcu_depth == 0)
+      rcu_unregister_thread();
+  }
+}
+
 void *LinuxAlignedFileReader::get_ctx(int flag) {
   if (unlikely(ioctx::ring == nullptr)) {
     register_thread(flag);
@@ -253,6 +268,7 @@ void LinuxAlignedFileReader::close() {
 
 void LinuxAlignedFileReader::read(std::vector<IORequest> &read_reqs, void *ctx, bool async) {
   assert(this->file_desc != -1);
+  enter_dax_rcu();
   auto current_region = this->pm_region.load();
   auto on_pm = (current_region != nullptr);
   bool fail = false;
@@ -269,11 +285,12 @@ void LinuxAlignedFileReader::read(std::vector<IORequest> &read_reqs, void *ctx, 
         break;
       }
       // TODO: using fine-grained unalighed I/O here
-      pmem_memcpy(req.buf, (uint8_t *) pm_addr + req.offset, req.len, 0);
+      memcpy(req.buf, (uint8_t *) pm_addr + req.offset, req.len);
     }
   } else {
     execute_io(ctx, this->file_desc, read_reqs);
   }
+  leave_dax_rcu();
 
   if (fail) {
     execute_io(ctx, this->file_desc, read_reqs);
@@ -313,7 +330,10 @@ void LinuxAlignedFileReader::atomic_truncate(uint64_t size) {
 
 void LinuxAlignedFileReader::sync() {
   assert(this->file_desc != -1);
-  int ret = fsync(this->file_desc);
+  if (fsync(this->file_desc) != 0) {
+    LOG(ERROR) << "Failed to sync " << file_path << ": " << strerror(errno);
+    crash();
+  }
 }
 
 #define EXTEND_FACTOR (1.5)
@@ -329,7 +349,7 @@ void *LinuxAlignedFileReader::mmap_hint(IORequest &req, bool write, uint64_t &ou
 
   uint64_t length = req.len;
   uint64_t offset = req.offset;
-  uint64_t extend_size = EXTEND_FACTOR * length;
+  uint64_t extend_size = std::max<uint64_t>(length, EXTEND_FACTOR * length);
 
   // check file size first
   struct stat st;
@@ -338,8 +358,8 @@ void *LinuxAlignedFileReader::mmap_hint(IORequest &req, bool write, uint64_t &ou
     return nullptr;
   }
 
-  auto exact_allocate = offset + length - st.st_size;
-  auto extend_allocate = offset + extend_size - st.st_size;
+  auto exact_allocate = offset + length > (uint64_t) st.st_size ? offset + length - st.st_size : 0;
+  auto extend_allocate = offset + extend_size > (uint64_t) st.st_size ? offset + extend_size - st.st_size : 0;
   // check file system remaining size
   uintmax_t free = std::filesystem::space(this->file_path).free;
   if (write && offset + length > st.st_size && extend_allocate > free) {
@@ -367,7 +387,8 @@ void *LinuxAlignedFileReader::mmap_hint(IORequest &req, bool write, uint64_t &ou
       // int ret = fallocate(this->file_desc, FALLOC_FL_ZERO_RANGE, st.st_size, aligned_size - st.st_size);
       LOG(INFO) << "Preallocate file to size " << aligned_size;
       if (ret != 0) {
-        LOG(WARN) << "Failed to fallocate file to size " << aligned_size << " : " << strerror(ret);
+        LOG(ERROR) << "Failed to fallocate file to size " << aligned_size << " : " << strerror(ret);
+        crash();
       }
       length = aligned_size - offset;
     } else {
@@ -435,44 +456,28 @@ void LinuxAlignedFileReader::munmap(void *addr, IORequest &req) {
 }
 
 void *LinuxAlignedFileReader::get_dax(uint64_t hint_size, bool init = false) {
-  bool need_alloc = false;
-
-  rcu_register_thread();
-  rcu_read_lock();
-
+  enter_dax_rcu();
+  hint_size = std::max<uint64_t>(hint_size, SECTOR_LEN);
   auto current_region = this->pm_region.load();
-  if (current_region == nullptr) {
-    // first time allocation
-    need_alloc = true;
-  } else {
-    if (hint_size > current_region->size) {
-      need_alloc = true;
-    }
-  }
-
-  if (init) {
-    need_alloc = true;
-  }
-
-  if (need_alloc) {
+  while (current_region == nullptr || hint_size > current_region->size) {
     uint64_t out_size = 0;
     IORequest mmap_req(0, hint_size, nullptr, 0, 0);
     auto addr = this->mmap_hint(mmap_req, true, out_size);
+    if (addr == nullptr)
+      crash();
     auto new_region = new dax_region{addr, out_size, this};
-    if (this->pm_region.compare_exchange_weak(current_region, new_region)) {
+    if (this->pm_region.compare_exchange_strong(current_region, new_region)) {
       // success
       if (current_region) {
         if (current_region->addr != nullptr) {
           call_rcu(&current_region->rcu, unmap_dax_region_callback);
         }
       }
-      current_region = this->pm_region.load();
+      current_region = new_region;
     } else {
-      // failed, another thread has expanded
-      this->munmap(addr, mmap_req);
+      IORequest unmap_req(0, out_size, nullptr, 0, 0);
+      this->munmap(addr, unmap_req);
       delete new_region;
-      // current_region is safe as call_rcu ensures the old region
-      // is not freed until all readers are done.
     }
   }
 
@@ -480,8 +485,7 @@ void *LinuxAlignedFileReader::get_dax(uint64_t hint_size, bool init = false) {
 }
 
 void LinuxAlignedFileReader::put_dax() {
-  rcu_read_unlock();
-  rcu_unregister_thread();
+  leave_dax_rcu();
 }
 
 void LinuxAlignedFileReader::init_dax(uint64_t hint_size) {
@@ -497,14 +501,11 @@ void LinuxAlignedFileReader::exit_dax() {
 }
 
 void LinuxAlignedFileReader::flush_dax(void *p, uint64_t size) {
-  uint64_t flush_num = ROUND_UP(size, 64) / 64;
-  for (uint64_t i = 0; i < flush_num; i++) {
-    _mm_clwb((char *) p + i * 64);
-  }
+  // The mapped writes are persisted at the next ordering barrier.
 }
 
 void LinuxAlignedFileReader::barrier_dax() {
-  _mm_sfence();
+  sync();
 }
 
 bool LinuxAlignedFileReader::check_addr_in_pm(const void *addr) {
@@ -526,6 +527,7 @@ bool LinuxAlignedFileReader::check_addr_in_pm(const void *addr) {
 
 void LinuxAlignedFileReader::send_io(IORequest &req, void *ctx, bool write) {
   io_uring *ring = (io_uring *) ctx;
+  enter_dax_rcu();
   bool on_pm = this->pm_region.load() != nullptr;
   if (!on_pm) {
     auto sqe = io_uring_get_sqe(ring);
@@ -552,10 +554,11 @@ void LinuxAlignedFileReader::send_io(IORequest &req, void *ctx, bool write) {
       _mm_prefetch((char *) pm_addr + u_ofs + i, _MM_HINT_T2);
     }
     // LOG(INFO) << "PM read offset: " << u_ofs << " len: " << u_len;
-    pmem_memcpy((char *) req.buf + buf_ofs, (char *) pm_addr + u_ofs, u_len, 0);
+    memcpy((char *) req.buf + buf_ofs, (char *) pm_addr + u_ofs, u_len);
 #endif
     req.finished = true;
   }
+  leave_dax_rcu();
 }
 
 void LinuxAlignedFileReader::send_io(std::vector<IORequest> &reqs, void *ctx, bool write) {

@@ -1,7 +1,6 @@
 #!/bin/bash
 
-mkdir -p /mnt/pmem0
-rm -rf /mnt/pmem0/*
-
-bash build.sh
-build/tests/quick_start
+set -e
+cmake -S . -B build -DCCANN_BUILD_PYTHON=OFF
+cmake --build build --target quick_start -j4
+build/tests/quick_start "$@"

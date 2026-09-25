@@ -1,6 +1,27 @@
 # CCANN: Crash-Consistent Approximate Nearest Neighbor Search
 
-CCANN is the first **crash-consistent** graph-based approximate nearest neighbor search (ANNS) index for persistent memory (PM), built upon [OdinANN (FAST'26)](https://www.usenix.org/conference/fast26/) and [PipeANN (OSDI'25)](https://www.usenix.org/conference/osdi25/). Its core innovation is **Soft Insert** — a per-vector crash-consistent persistence mechanism inspired by filesystem soft updates, which durably persists each vector to PM in milliseconds while delivering high-performance insertion and search.
+CCANN is a crash-consistent graph-based approximate nearest neighbor search (ANNS) index. Its SSD backend uses shared file mappings and filesystem `fsync` barriers to order graph, tag, mapping, PQ, and checkpoint writes.
+
+### SSD Python API
+
+On Linux, install the native build prerequisites (CMake, a C++17 compiler, OpenMP, BLAS, TBB, liburing, and userspace RCU), then run `pip install .`. The extension does not link PMDK and does not require PM/DAX hardware.
+
+```python
+import numpy as np
+import ccannpy
+
+vectors = np.random.default_rng(0).random((300, 64), dtype=np.float32)
+tags = np.arange(300, dtype=np.uint32)
+index = ccannpy.Index.create("/path/to/index", vectors, tags, ccannpy.Metric.L2)
+index.add(np.zeros(64, dtype=np.float32), 300)
+ids, distances = index.search(vectors[0], k=10)
+index.remove(300)
+index.save()
+index = ccannpy.Index.load("/path/to/index", ccannpy.Metric.L2)
+print(index.npoints, index.dimension)
+```
+
+`create` requires at least 256 vectors for PQ training. Vectors are float32, tags are uint32, and the input dimension and metric are checked on load. Only L2 is supported by this Python API. Use a fresh prefix for each build. Tags cannot be reused in an existing generation; rebuild from canonical records to replace a vector. `save` waits for the SSD checkpoint and writes deletion markers; an embedding record store remains the source of truth for rebuilding a missing or damaged index.
 
 ## 🧠 Core Innovation: Soft Insert
 
@@ -163,56 +184,30 @@ bash ./build.sh
 
 ## Quick Start
 
-> **Prerequisite:** PM (Persistent Memory) hardware with DAX support is required.  
-> Without PM, run `sudo bash scripts/setups/setup-ext4-dax.sh` to configure PM namespaces.
-
-A self-contained quick start test (`tests/quick_start.cpp`) is provided to verify the PM-based insert and search pipeline **without any external dataset**.
-
-### 1. Setup PM Environment (DAX)
+A self-contained quick start test (`tests/quick_start.cpp`) verifies SSD insert and search without an external dataset or PM/DAX setup.
 
 ```bash
-# Create ext4-DAX filesystems on PM namespaces
-sudo bash scripts/setups/setup-ext4-dax.sh
-```
-
-This script configures PM namespaces (`namespace0.0`, `namespace1.0`) in `fsdax` mode and mounts them as ext4-DAX at `/mnt/pmem0` and `/mnt/pmem1`.
-
-### 2. Build (with cc-ann PM flags)
-
-```bash
-cd third_party/liburing && ./configure && make -j && cd ../..
-
-# Uses cc-ann flags: -DBATCH_PRUNING -DEARLY_EXIT -DASYNC_INSERTION -DFINE_GRAINED_CONCURRENCY
-# (see scripts/tools/setup-cc-ann.sh for all configurations)
-bash ./build.sh
-```
-
-### 3. Run Quick Start Test
-
-```bash
-cd build
-
 # Default: 500 base + 500 insert, 128-dim float vectors, L2
-./tests/quick_start
+bash quick_start.sh
 
 # Custom parameters
-./tests/quick_start \
+bash quick_start.sh \
     --base 10000 --dim 256 --insert 1000 \
     --R 64 --L 128 --Ld 128 --K 20 --Ls 150 \
     --bw 4 --threads 16
 
 # Show all options
-./tests/quick_start --help
+bash quick_start.sh --help
 ```
 
 ### What the Test Does
 
 | Step | Operation | Description |
 |------|-----------|-------------|
-| 1 | Build disk index | Generates random vectors, builds memory index, creates PQ-compressed disk layout on PM |
-| 2 | Init `DynamicSSDIndex` | Opens the PM-based disk index for insert & search |
-| 3 | **PM Insert** | Inserts random vectors via Soft Insert (`sync_index.insert()`) |
-| 4 | **PM Search** | Searches with brute-force ground truth, reports Recall@K |
+| 1 | Build disk index | Generates random vectors and a PQ-compressed SSD layout |
+| 2 | Init `DynamicSSDIndex` | Opens the SSD index for insert and search |
+| 3 | **SSD Insert** | Inserts random vectors with filesystem ordering |
+| 4 | **SSD Search** | Searches with brute-force ground truth and reports Recall@K |
 | 5 | Cleanup | Removes temporary files |
 
 ### Example Output
@@ -221,7 +216,7 @@ The following is an example output of the quick start test:
 
 ```text
 ╔══════════════════════════════════════════════════════════╗
-║    CCANN PM Quick Start — PM Insert & Search Test        ║
+║    CCANN SSD Quick Start - Insert & Search Test          ║
 ║          Self-contained — no external dataset             ║
 ╚══════════════════════════════════════════════════════════╝
 

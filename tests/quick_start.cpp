@@ -1,8 +1,8 @@
 /**
- * CCANN Quick Start Test — PM-based Insert & Search
+ * CCANN Quick Start Test - SSD Insert & Search
  * Self-contained -- no external dataset required
  *
- * Pipeline (following insert.cpp PM pattern):
+ * Pipeline:
  *   1. Generate random data -> build disk index
  *   2. Insert vectors via DynamicSSDIndex
  *   3. Search and evaluate Recall
@@ -85,7 +85,7 @@ void brute_force(const std::vector<T> &data, const std::vector<T> &query,
 }
 
 // ============================================================
-// Core: PM-based quick start (following insert.cpp)
+// Core: SSD quick start
 // ============================================================
 template<typename T, typename TagT = uint32_t>
 int run_pm_quick_start(const std::string &dtype_name, ccann::Distance<T> *dist_cmp,
@@ -95,7 +95,7 @@ int run_pm_quick_start(const std::string &dtype_name, ccann::Distance<T> *dist_c
                        unsigned K, unsigned L_search) {
   std::cout << "\n"
             << "╔══════════════════════════════════════════════════════════╗\n"
-            << "║         CCANN PM Quick Start — Insert & Search           ║\n"
+            << "║        CCANN SSD Quick Start - Insert & Search           ║\n"
             << "╚══════════════════════════════════════════════════════════╝\n"
             << std::endl;
 
@@ -121,8 +121,9 @@ int run_pm_quick_start(const std::string &dtype_name, ccann::Distance<T> *dist_c
   // ============================================================
   std::cout << "=== Step 1: Generate base data & build disk index ===" << std::endl;
 
-  std::string data_file = "/tmp/ccann_pm_qs_data.bin";
-  std::string index_prefix = "/mnt/pmem0/ccann_pm_qs";
+  std::string data_file = "/tmp/ccann_ssd_qs_data.bin";
+  const char *prefix_env = std::getenv("CCANN_INDEX_PREFIX");
+  std::string index_prefix = prefix_env ? prefix_env : "/tmp/ccann_ssd_qs";
   std::string pq_pivots_path = index_prefix + "_pq_pivots.bin";
   std::string pq_compressed_path = index_prefix + "_pq_compressed.bin";
   std::string mem_index_path = index_prefix + "_mem.index";
@@ -205,9 +206,9 @@ int run_pm_quick_start(const std::string &dtype_name, ccann::Distance<T> *dist_c
   std::cout << "  Disk index loaded, " << disk_npts << " points" << std::endl;
 
   // ============================================================
-  // Step 3: Generate insert data & PM insert
+  // Step 3: Generate insert data & SSD insert
   // ============================================================
-  std::cout << "\n=== Step 3: Generate insert data & PM insert ===" << std::endl;
+  std::cout << "\n=== Step 3: Generate insert data & SSD insert ===" << std::endl;
 
   std::random_device rd;
   std::mt19937 gen(rd());
@@ -339,7 +340,7 @@ int run_pm_quick_start(const std::string &dtype_name, ccann::Distance<T> *dist_c
   // Summary
   std::cout << "\n"
             << "╔══════════════════════════════════════════════════════════╗\n"
-            << "║                PM Quick Start Complete                   ║\n"
+            << "║                SSD Quick Start Complete                  ║\n"
             << "╠══════════════════════════════════════════════════════════╣\n";
 
   // Use consistent label width + value width + unit so all rows align
@@ -401,7 +402,7 @@ int main(int argc, char **argv) {
     else if (arg == "--K" && i + 1 < argc) K = std::stoul(argv[++i]);
     else if (arg == "--Ls" && i + 1 < argc) L_search = std::stoul(argv[++i]);
     else if (arg == "--help" || arg == "-h") {
-      std::cout << "CCANN PM Quick Start -- PM-based Insert & Search\n"
+      std::cout << "CCANN SSD Quick Start -- SSD Insert & Search\n"
                 << "Usage: ./quick_start [options]\n\n"
                 << "Options:\n"
                 << "  --dtype TYPE    float (default), int8, uint8\n"
@@ -423,7 +424,7 @@ int main(int argc, char **argv) {
 
   std::cout << "\n"
             << "╔══════════════════════════════════════════════════════════╗\n"
-            << "║    CCANN PM Quick Start — PM Insert & Search Test        ║\n"
+            << "║    CCANN SSD Quick Start - Insert & Search Test          ║\n"
             << "║          Self-contained — no external dataset             ║\n"
             << "╚══════════════════════════════════════════════════════════╝\n"
             << std::endl;
@@ -445,4 +446,3 @@ int main(int argc, char **argv) {
     return 1;
   }
 }
-

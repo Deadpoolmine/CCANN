@@ -15,7 +15,6 @@
 #include "tsl/robin_set.h"
 
 namespace ccann {
-#define PRE_MAP_PMEM_SIZE (1 * 1024L * 1024L * 1024L)
 
   template<typename T>
   DiskNode<T>::DiskNode(uint32_t id, T *coords, uint32_t *nhood) : id(id) {
@@ -207,6 +206,14 @@ namespace ccann {
 
   template<typename T, typename TagT>
   SSDIndex<T, TagT>::~SSDIndex() {
+    for (int i = 0; i < kBgIOThreads; ++i) {
+      if (bg_io_thread_[i] != nullptr) {
+        bg_io_tasks.push(new BgTask{nullptr, {}, {}, {}, true});
+        bg_io_tasks.push_notify_all();
+        bg_io_thread_[i]->join();
+        delete bg_io_thread_[i];
+      }
+    }
     LOG(INFO) << "Lock table size: " << this->idx_lock_table.size();
     LOG(INFO) << "Page cache size: " << v2::cache.cache.size();
 
@@ -249,7 +256,6 @@ namespace ccann {
     LOG(INFO) << "Setup " << kBgIOThreads << " background I/O threads for insert...";
     for (int i = 0; i < kBgIOThreads; ++i) {
       bg_io_thread_[i] = new std::thread(&SSDIndex<T, TagT>::bg_io_thread, this);
-      bg_io_thread_[i]->detach();
     }
 
     LOG(INFO) << "Setup commit thread for insert...";
@@ -397,8 +403,8 @@ namespace ccann {
     // Load PQ pivots (质心)
     pq_table.load_pq_centroid_bin(pq_table_bin.c_str(), nchunks_u64, pq_pivots_offset);
 
-    if (disk_nnodes != num_points) {
-      LOG(INFO) << "Mismatch in #points for compressed data file and disk "
+    if (disk_nnodes > num_points) {
+      LOG(INFO) << "Compressed data file has fewer points than disk "
                    "index file: "
                 << disk_nnodes << " vs " << num_points;
       return -1;
@@ -442,28 +448,24 @@ namespace ccann {
       tags_writer->open(tags_file, true, false);
     }
 
-    if (index_fname.find("pmem") != std::string::npos) {
+    {
       this->on_pm = true;
 
       auto index_pre_map_size = reader->file_size();
-      index_pre_map_size = ROUND_UP(index_pre_map_size, PRE_MAP_PMEM_SIZE);
-      LOG(INFO) << "Pre-mapping first " << index_pre_map_size << " bytes of pmem index file.";
+      LOG(INFO) << "Mapping " << index_pre_map_size << " bytes of SSD index file.";
       reader->init_dax(index_pre_map_size);
 
 #ifndef ANN_LARGE
       auto pq_pre_map_size = pq_compressed_writer->file_size();
-      pq_pre_map_size = ROUND_UP(pq_pre_map_size, PRE_MAP_PMEM_SIZE);
       pq_compressed_writer->init_dax(pq_pre_map_size);
 #endif
 
       auto id2loc_pre_map_size = id2loc_writer->file_size();
-      id2loc_pre_map_size = ROUND_UP(id2loc_pre_map_size, PRE_MAP_PMEM_SIZE);
-      LOG(INFO) << "Pre-mapping first " << id2loc_pre_map_size << " bytes of pmem id2loc file.";
+      LOG(INFO) << "Mapping " << id2loc_pre_map_size << " bytes of SSD id2loc file.";
       id2loc_writer->init_dax(id2loc_pre_map_size);
 
       if (this->enable_tags) {
         auto tags_pre_map_size = tags_writer->file_size();
-        tags_pre_map_size = ROUND_UP(tags_pre_map_size, PRE_MAP_PMEM_SIZE);
         tags_writer->init_dax(tags_pre_map_size);
       }
     }
@@ -761,6 +763,35 @@ namespace ccann {
 #endif
     } else {
       this->load_page_layout(index_prefix, nnodes_per_sector, num_points);
+    }
+
+    if (this->on_pm && std::filesystem::exists(id2loc_file)) {
+      auto mapping = id2loc_writer->get_dax(num_points * sizeof(uint32_t), false);
+      const auto *locations = static_cast<const uint32_t *>(mapping);
+      std::vector<std::pair<uint32_t, uint32_t>> entries;
+      uint32_t max_loc = 0;
+      entries.reserve(num_points);
+      for (uint32_t id = 0; id < num_points; ++id) {
+        uint32_t loc = locations[id];
+        if (id == 0 || loc != 0) {
+          entries.emplace_back(id, loc);
+          max_loc = std::max(max_loc, loc);
+        }
+      }
+      id2loc_writer->put_dax();
+      this->id2loc_.clear();
+      this->page_layout.clear();
+      for (const auto &[id, loc] : entries) {
+        this->id2loc_.insert_or_assign(id, loc);
+        auto page = loc_sector_no(loc);
+        PageArr layout;
+        if (!this->page_layout.find(page, layout)) {
+          layout.fill(kInvalidID);
+          this->page_layout.insert(page, layout);
+        }
+        this->page_layout.update_fn(page, [&, loc, id](PageArr &value) { value[loc % nnodes_per_sector] = id; });
+      }
+      this->cur_loc = ROUND_UP(max_loc + 1, nnodes_per_sector);
     }
 
     // load tags

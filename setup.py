@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -47,7 +48,11 @@ class CMakeBuild(build_ext):
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir}{os.sep}",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
             f"-DCMAKE_BUILD_TYPE={cfg}",  # not used on MSVC, but no harm
+            "-DCCANN_BUILD_PYTHON=ON",
+            "-DBLA_VENDOR=Generic",
         ]
+        import pybind11
+        cmake_args.append(f"-Dpybind11_DIR={pybind11.get_cmake_dir()}")
         build_args = []
         # Adding CMake arguments set as environment variable
         # (needed e.g. to build for ARM OSx on conda-forge)
@@ -118,8 +123,9 @@ class CMakeBuild(build_ext):
             ["cmake", ext.sourcedir, *cmake_args], cwd=build_temp, check=True
         )
         subprocess.run(
-            ["cmake", "--build", ".", *build_args], cwd=build_temp, check=True
+            ["cmake", "--build", ".", "--target", "_native", *build_args], cwd=build_temp, check=True
         )
+        shutil.copy2(Path(ext.sourcedir) / "third_party/userspace-rcu/build/lib/liburcu.so.8", extdir)
 
 
 # The information here can also be placed in setup.cfg - better separation of
@@ -129,9 +135,12 @@ setup(
     version="0.2.10",
     author="Hao Guo",
     author_email="gh23@mails.tsinghua.edu.cn",
-    ext_modules=[CMakeExtension("ccann")],
+    packages=["ccannpy"],
+    package_data={"ccannpy": ["liburcu.so.8"]},
+    ext_modules=[CMakeExtension("ccannpy._native")],
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
     # extras_require={"test": ["pytest>=6.0"]},
-    python_requires=">=3.7",
+    python_requires=">=3.8",
+    install_requires=["numpy>=1.21"],
 )

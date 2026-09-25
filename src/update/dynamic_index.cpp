@@ -18,7 +18,6 @@
 #include <shared_mutex>
 #include <string>
 #include <sys/mman.h>
-#include <libpmem.h>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -211,8 +210,9 @@ namespace ccann {
     tags_writer.reset(new LinuxAlignedFileReader());
     id2loc_writer.reset(new LinuxAlignedFileReader());
 
+    bool has_tags = std::filesystem::exists(disk_prefix_in + "_disk.index.tags");
     _disk_index = new ccann::SSDIndex<T, TagT>(this->_dist_metric, reader, pq_compressed_writer, tags_writer,
-                                                 id2loc_writer, false, false, &_paras_disk);
+                                                 id2loc_writer, false, has_tags, &_paras_disk);
 #ifdef J_ANN
     _disk_index->journals = new v2::Journal<TagT> *[N_JOURNAL];
     for (int i = 0; i < N_JOURNAL; i++) {
@@ -296,6 +296,7 @@ namespace ccann {
       _disk_index->commit_thread_->join();
       delete _disk_index->commit_thread_;
     }
+    delete _disk_index;
     LOG(INFO) << "Done";
   }
 

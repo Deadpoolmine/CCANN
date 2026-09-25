@@ -19,16 +19,12 @@
 #include <tuple>
 #include <boost/crc.hpp>
 
-#include "libpmem.h"
 #include "linux_aligned_file_reader.h"
 #include <sys/syscall.h>
 #include <unistd.h>
 
 namespace ccann {
 
-#define PMEM_TRANSFER_CACHE (PMEM_F_MEM_NODRAIN | PMEM_F_MEM_NOFLUSH | PMEM_F_MEM_NONTEMPORAL)
-#define PMEM_TRANSFER_LARGE (PMEM_F_MEM_NODRAIN | PMEM_F_MEM_NOFLUSH | PMEM_F_MEM_TEMPORAL)
-#define PMEM_TRANSFER (PMEM_F_MEM_NODRAIN)
 
   template<typename T, typename TagT>
   uint32_t SSDIndex<T, TagT>::search_phase(const T *point, tsl::robin_set<uint32_t> *deletion_set,
@@ -289,8 +285,8 @@ namespace ccann {
       DiskNode<T> target_node_pm(target_id, offset_to_node_coords(pm_node), offset_to_node_nhood(pm_node));
       target_node_pm.nnbrs = new_nhood.size();
       *(target_node_pm.nbrs - 1) = target_node.nnbrs;  // write to buf
-      pmem_memcpy(target_node_pm.coords, point, data_dim * sizeof(T), PMEM_TRANSFER_CACHE);
-      pmem_memcpy(target_node_pm.nbrs, new_nhood.data(), new_nhood.size() * sizeof(uint32_t), PMEM_TRANSFER_CACHE);
+      memcpy(target_node_pm.coords, point, data_dim * sizeof(T));
+      memcpy(target_node_pm.nbrs, new_nhood.data(), new_nhood.size() * sizeof(uint32_t));
       node_buf = pm_node;
     }
 
@@ -299,11 +295,12 @@ namespace ccann {
 
     // Step 1. Update Tags in PM
     if (this->enable_tags) {
-      auto tag_size = ROUND_UP((target_id + 1) * sizeof(TagT), SECTOR_LEN);
+      auto tag_size = ROUND_UP(2 * sizeof(uint32_t) + (target_id + 1) * sizeof(TagT), SECTOR_LEN);
       // file system allows all zero
       auto tag_dax = tags_writer->get_dax(tag_size, false);
-      auto target_tag_offset = target_id * sizeof(TagT);
-      pmem_memcpy_persist((char *) tag_dax + target_tag_offset, &tag, sizeof(TagT));
+      auto target_tag_offset = 2 * sizeof(uint32_t) + target_id * sizeof(TagT);
+      memcpy((char *) tag_dax + target_tag_offset, &tag, sizeof(TagT));
+      tags_writer->sync();
       tags_writer->put_dax();
     }
 
@@ -463,8 +460,8 @@ namespace ccann {
       DiskNode<T> w_nbr_node(new_nhood[i], offset_to_node_coords(w_node_buf), offset_to_node_nhood(w_node_buf));
       w_nbr_node.nnbrs = (_u32) nhood.size();
       *(w_nbr_node.nbrs - 1) = (_u32) nhood.size();  // write to buf
-      pmem_memcpy(w_nbr_node.coords, r_nbr_node.coords, data_dim * sizeof(T), PMEM_TRANSFER_CACHE);
-      pmem_memcpy(w_nbr_node.nbrs, nhood.data(), w_nbr_node.nnbrs * sizeof(uint32_t), PMEM_TRANSFER_CACHE);
+      memcpy(w_nbr_node.coords, r_nbr_node.coords, data_dim * sizeof(T));
+      memcpy(w_nbr_node.nbrs, nhood.data(), w_nbr_node.nnbrs * sizeof(uint32_t));
 
       if (!reader->check_addr_in_pm(w_node_buf)) {
         // the buffer is in memory
@@ -474,8 +471,8 @@ namespace ccann {
         DiskNode<T> w_nbr_node_pm(new_nhood[i], offset_to_node_coords(pm_node), offset_to_node_nhood(pm_node));
         w_nbr_node_pm.nnbrs = (_u32) nhood.size();
         *(w_nbr_node_pm.nbrs - 1) = (_u32) nhood.size();  // write to buf
-        pmem_memcpy(w_nbr_node_pm.coords, r_nbr_node.coords, data_dim * sizeof(T), PMEM_TRANSFER_CACHE);
-        pmem_memcpy(w_nbr_node_pm.nbrs, nhood.data(), w_nbr_node_pm.nnbrs * sizeof(uint32_t), PMEM_TRANSFER_CACHE);
+        memcpy(w_nbr_node_pm.coords, r_nbr_node.coords, data_dim * sizeof(T));
+        memcpy(w_nbr_node_pm.nbrs, nhood.data(), w_nbr_node_pm.nnbrs * sizeof(uint32_t));
         w_node_buf = pm_node;
       }
       // assert(reader->check_addr_in_pm(w_node_buf) == true);
@@ -500,7 +497,7 @@ namespace ccann {
     auto id2loc_size = ROUND_UP((target_id + 1) * sizeof(uint32_t), SECTOR_LEN);
     auto id2loc_dax = id2loc_writer->get_dax(id2loc_size, false);
     auto target_id_offset = target_id * sizeof(uint32_t);
-    pmem_memcpy((char *) id2loc_dax + target_id_offset, &locs[new_nhood.size()], sizeof(uint32_t), PMEM_TRANSFER);
+    memcpy((char *) id2loc_dax + target_id_offset, &locs[new_nhood.size()], sizeof(uint32_t));
 
     // update locs
     // no concurrency issue for target_id (as it can be only inserted).
@@ -512,6 +509,7 @@ namespace ccann {
       reader->flush_dax(flush_req.buf, flush_req.len);
     }
     reader->barrier_dax();
+    id2loc_writer->sync();
 
 #ifdef FINE_GRAINED_CONCURRENCY
     // We do not need to lock idx_lock_table here, as id2loc_ is concurrent.
@@ -543,7 +541,7 @@ namespace ccann {
 
       // update PM id2loc
       auto id_offset = new_nhood[i] * sizeof(uint32_t);
-      pmem_memcpy((char *) id2loc_dax + id_offset, &locs[i], sizeof(uint32_t), PMEM_TRANSFER);
+      memcpy((char *) id2loc_dax + id_offset, &locs[i], sizeof(uint32_t));
     }
 
     // with lock, for simple concurrency with alloc_loc.
@@ -554,6 +552,7 @@ namespace ccann {
     unlock_idx(idx_lock_table, locked);
 #endif
     id2loc_writer->put_dax();
+    id2loc_writer->sync();
 #endif
 
     ANN_END_TIMING(update_metadata_time, update_meta_t);
@@ -998,6 +997,8 @@ namespace ccann {
   template<typename T, typename TagT>
   int SSDIndex<T, TagT>::async_insert_in_place(const T *point, const TagT &tag,
                                                tsl::robin_set<uint32_t> *deletion_set) {
+    if (this->on_pm)
+      return insert_in_place(point, tag, deletion_set);
     std::vector<Neighbor> exp_node_info;
     tsl::robin_map<uint32_t, T *> coord_map;
     std::vector<uint32_t> new_nhood;
@@ -1086,6 +1087,7 @@ namespace ccann {
 
   template<typename T, typename TagT>
   int SSDIndex<T, TagT>::insert_in_place(const T *point, const TagT &tag, tsl::robin_set<uint32_t> *deletion_set) {
+    std::lock_guard<std::mutex> insert_lock(insert_mutex_);
     std::vector<Neighbor> exp_node_info;
     tsl::robin_map<uint32_t, T *> coord_map;
     std::vector<uint32_t> new_nhood;
@@ -1120,6 +1122,8 @@ namespace ccann {
     ANN_START_TIMING(insert_phase_time, insert_t);
     target_id = (this->*func)(point, tag, target_id, exp_node_info, coord_map, new_nhood, page_ref, out_pq_coords);
     ANN_END_TIMING(insert_phase_time, insert_t);
+    if (this->on_pm)
+      flush_commits();
     return target_id;
   }
 
@@ -1134,6 +1138,11 @@ namespace ccann {
       while (task == nullptr) {
         this->bg_io_tasks.wait_for_push_notify();
         task = bg_io_tasks.pop();
+      }
+
+      if (task->terminate) {
+        delete task;
+        break;
       }
 
       reader->write(task->writes, ctx);
@@ -1153,6 +1162,16 @@ namespace ccann {
   }
 
 #define COMMIT_INTERVAL 1000
+
+  template<class T, class TagT>
+  void SSDIndex<T, TagT>::flush_commits() {
+    std::promise<void> completion;
+    auto ready = completion.get_future();
+    auto task = new CommitTask{{}, 0, false, nullptr, &completion};
+    commit_tasks.push(task);
+    commit_tasks.push_notify_all();
+    ready.get();
+  }
 
   template<class T, class TagT>
   void SSDIndex<T, TagT>::insert_commit_thread() {
@@ -1177,15 +1196,31 @@ namespace ccann {
       }
 #ifndef NO_ISS
       if (ckpt) {
-        this->ckpt_id.store(cur_ckpt_id);
         // ensure all previous writes are persistent
         reader->barrier_dax();
+        id2loc_writer->sync();
+#ifndef ANN_LARGE
+        pq_compressed_writer->sync();
+        auto pq_header = pq_compressed_writer->get_dax(SECTOR_LEN, false);
+        memcpy(pq_header, &cur_ckpt_id, sizeof(uint32_t));
+        pq_compressed_writer->sync();
+        pq_compressed_writer->put_dax();
+#endif
+        if (enable_tags) {
+          tags_writer->sync();
+          auto tags_header = tags_writer->get_dax(SECTOR_LEN, false);
+          memcpy(tags_header, &cur_ckpt_id, sizeof(uint32_t));
+          tags_writer->sync();
+          tags_writer->put_dax();
+        }
         // update current checkpoint id
         // so we do not check these data during next recovery
         auto index_addr = reader->get_dax(SECTOR_LEN, false);
         auto npts_ofs = 0;
-        pmem_memcpy_persist((char *) index_addr + npts_ofs, &cur_ckpt_id, sizeof(uint32_t));
+        memcpy((char *) index_addr + npts_ofs, &cur_ckpt_id, sizeof(uint32_t));
+        reader->sync();
         reader->put_dax();
+        this->ckpt_id.store(cur_ckpt_id);
       }
 #endif
     };
@@ -1201,6 +1236,13 @@ namespace ccann {
         LOG(INFO) << "Commit thread received terminate signal.";
         delete task;
         break;
+      }
+
+      if (task->completion != nullptr) {
+        process_commit_queue();
+        task->completion->set_value();
+        delete task;
+        continue;
       }
 
       if (task->point) {
@@ -1222,10 +1264,11 @@ namespace ccann {
 #ifndef NO_ISS
 #ifndef ANN_LARGE
       auto pq_bytes_per_vector = task->pq_coords.size() * sizeof(uint8_t);
-      auto pq_size = ROUND_UP((target_id + 1) * pq_bytes_per_vector, SECTOR_LEN);
+      auto pq_size = ROUND_UP(2 * sizeof(uint32_t) + (target_id + 1) * pq_bytes_per_vector, SECTOR_LEN);
       auto pq_addr = this->pq_compressed_writer->get_dax(pq_size, false);
-      auto pq_offset = target_id * pq_bytes_per_vector;
-      pmem_memcpy_persist((char *) pq_addr + pq_offset, pq_coords, pq_bytes_per_vector);
+      auto pq_offset = 2 * sizeof(uint32_t) + target_id * pq_bytes_per_vector;
+      memcpy((char *) pq_addr + pq_offset, pq_coords, pq_bytes_per_vector);
+      pq_compressed_writer->sync();
       this->pq_compressed_writer->put_dax();
 #endif
 #endif
@@ -1249,9 +1292,10 @@ namespace ccann {
           auto id2loc_dax = id2loc_writer->get_dax(id2loc_size, false);
           for (auto &[id, loc] : id2loc_batch) {
             auto id_offset = id * sizeof(uint32_t);
-            pmem_memcpy((char *) id2loc_dax + id_offset, &loc, sizeof(uint32_t), PMEM_TRANSFER);
+            memcpy((char *) id2loc_dax + id_offset, &loc, sizeof(uint32_t));
           }
           id2loc_writer->put_dax();
+          id2loc_writer->sync();
         }
       }
 

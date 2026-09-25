@@ -3,6 +3,7 @@ project(ccann)
 
 set(CMAKE_STANDARD 17)
 option(USE_AIO "Use AIO instead of liburing" OFF)
+option(CCANN_BUILD_PYTHON "Build the Python extension" OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # set(CMAKE_C_COMPILER_LAUNCHER ccache)
@@ -24,7 +25,11 @@ add_compile_options(
 	-Wno-unused-parameter
 	-Wno-unused-but-set-variable
 )
-add_compile_options(-g -O3 -march=native -mtune=native -ftree-vectorize -funroll-loops )
+if(CCANN_BUILD_PYTHON)
+  add_compile_options(-g -O3 -mtune=generic -ftree-vectorize -funroll-loops)
+else()
+  add_compile_options(-g -O3 -march=native -mtune=native -ftree-vectorize -funroll-loops)
+endif()
 # add_compile_options(-g -O3 -march=native -mtune=native -ftree-vectorize -funroll-loops -fsanitize=address)
 # add_compile_options(-g -O0 -march=native -mtune=native -ftree-vectorize -funroll-loops)
 # add_compile_options(-g -O3 -march=native -mtune=native -ftree-vectorize -funroll-loops -mno-avx512f -mno-avx512vl -mno-avx512bw -mno-avx512cd)
@@ -57,13 +62,11 @@ add_definitions(
 
 include_directories(
 	${PROJECT_SOURCE_DIR}/third_party/liburing/src/include
-	${PROJECT_SOURCE_DIR}/third_party/pmdk/src/include
 	${PROJECT_SOURCE_DIR}/third_party/thread-pool/include
 	${PROJECT_SOURCE_DIR}/third_party/userspace-rcu/build/include
 )
 link_directories(
 	${PROJECT_SOURCE_DIR}/third_party/liburing/src
-	${PROJECT_SOURCE_DIR}/third_party/pmdk/src
 )
 
 if(USE_AIO)
@@ -75,18 +78,12 @@ else()
 	link_libraries(uring)
 endif()
 
-message(STATUS "Link with PMDK")
-link_libraries(
-	${PROJECT_SOURCE_DIR}/third_party/pmdk/src/nondebug/libpmem.so
-)
-
 message(STATUS "Link with URCU")
 link_libraries(
 	${PROJECT_SOURCE_DIR}/third_party/userspace-rcu/build/lib/liburcu.so
 )
 
 link_libraries(
-	jemalloc
 	tbb
 )
 # add_compile_options(-fsanitize=address,undefined -lasan -lubsan)
@@ -122,7 +119,9 @@ else()
 	message(STATUS "CPU does not support AVX512 or detection failed")
 endif()
 
-if(COMPILER_SUPPORTS_AVX512F AND CPU_SUPPORTS_AVX512)
+if(CCANN_BUILD_PYTHON)
+    message(STATUS "Building portable Python extension without host-specific ISA")
+elseif(COMPILER_SUPPORTS_AVX512F AND CPU_SUPPORTS_AVX512)
     message(STATUS "Compiler and CPU supports -mavx512f. Enabling AVX512F.")
 	add_definitions(-DUSE_AVX512)
 elseif(COMPILER_SUPPORTS_AVX2 AND CPU_SUPPORTS_AVX2)
@@ -153,4 +152,6 @@ endif()
 add_subdirectory(src)
 add_subdirectory(tests)
 add_subdirectory(tests/utils)
-# add_subdirectory(python)
+if(CCANN_BUILD_PYTHON)
+  add_subdirectory(python)
+endif()

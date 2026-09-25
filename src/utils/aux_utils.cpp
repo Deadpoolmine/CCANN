@@ -973,6 +973,10 @@ namespace ccann {
   template bool build_disk_index<float, uint32_t>(const char *dataFilePath, const char *indexFilePath,
                                                   const char *indexBuildParameters, ccann::Metric _compareMetric,
                                                   bool singleFileIndex, const char *tag_file);
+  template bool build_disk_index_py<float, uint32_t>(const char *dataPath, const char *indexFilePath,
+                                                     uint32_t R, uint32_t L, uint32_t M, uint32_t num_threads,
+                                                     uint32_t PQ_bytes, ccann::Metric metric,
+                                                     bool single_file_index, const char *tag_file);
   // template bool build_disk_index<int8_t, uint64_t>(const char *dataFilePath,
   //                                                                    const char *indexFilePath,
   //                                                                    const char *indexBuildParameters,

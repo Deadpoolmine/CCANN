@@ -2,6 +2,7 @@
 #include <immintrin.h>
 #include <cassert>
 #include <cstdint>
+#include <future>
 #include <string>
 #include <set>
 #include "v2/journal.h"
@@ -408,6 +409,7 @@ namespace ccann {
       std::vector<IORequest> writes;
       std::vector<uint64_t> pages_to_unlock;
       std::vector<uint64_t> pages_to_deref;
+      bool terminate = false;
     };
     // its concurrency should not be the bottleneck.
     ConcurrentQueue<BgTask *> bg_io_tasks = ConcurrentQueue<BgTask *>(nullptr);
@@ -421,6 +423,7 @@ namespace ccann {
       bool terminate = false;
       // for maintain memory structure
       T *point;
+      std::promise<void> *completion = nullptr;
     };
     ConcurrentQueue<CommitTask *> commit_tasks = ConcurrentQueue<CommitTask *>(nullptr);
     // Queue for background PM id2loc updates, consumed by insert_commit_thread.
@@ -428,6 +431,7 @@ namespace ccann {
     ConcurrentQueue<std::pair<uint32_t, uint32_t>> id2loc_pm_queue =
         ConcurrentQueue<std::pair<uint32_t, uint32_t>>(std::make_pair(kInvalidID, kInvalidID));
     void insert_commit_thread();
+    void flush_commits();
     // only one thread for barrier simplification.
     std::thread *commit_thread_{nullptr};
 
@@ -579,6 +583,7 @@ namespace ccann {
 
     std::atomic<uint32_t> search_thread_count_{0};
     std::atomic<uint32_t> insert_thread_count_{0};
+    std::mutex insert_mutex_;
     std::atomic<uint32_t> calc_thread_count_{0};
 
     // page search
