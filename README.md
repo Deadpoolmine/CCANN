@@ -21,7 +21,7 @@ index = ccannpy.Index.load("/path/to/index", ccannpy.Metric.L2)
 print(index.npoints, index.dimension)
 ```
 
-`create` requires at least 256 vectors for PQ training. Vectors are float32, tags are uint32, and the input dimension and metric are checked on load. Only L2 is supported by this Python API. Use a fresh prefix for each build. Tags cannot be reused in an existing generation; rebuild from canonical records to replace a vector. `save` waits for the SSD checkpoint and writes deletion markers; an embedding record store remains the source of truth for rebuilding a missing or damaged index.
+`create` accepts either no vectors or at least 256 vectors for PQ training. To start empty, pass arrays shaped `(0, dimension)` and `(0,)`; this index stores each update in an fsynced SSD log and uses exact search. It does not automatically convert to the graph index as it grows. Vectors are float32, tags are uint32, and the input dimension and metric are checked on load. Only L2 is supported by this Python API. Use a fresh prefix for each build. Tags cannot be reused in an existing generation; rebuild from canonical records to replace a vector. For graph indexes, `save` waits for the SSD checkpoint and writes deletion markers; an embedding record store remains the source of truth for rebuilding a missing or damaged index.
 
 ## 🧠 Core Innovation: Soft Insert
 

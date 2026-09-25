@@ -1,3 +1,6 @@
+import signal
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
@@ -127,3 +130,77 @@ def test_multithreaded_search_while_inserting(ssd_index):
         ids, _ = restored.search(vector, 5)
         assert ids.shape == (5,)
         assert set(ids).issubset(set(range(1000, 1300)) | set(range(3000, 3008)))
+
+
+def test_insert_from_empty_and_reload(tmp_path):
+    prefix = str(tmp_path / "empty")
+    index = ccannpy.Index.create(prefix, np.empty((0, 4), dtype=np.float32),
+                                 np.empty(0, dtype=np.uint32), threads=2)
+    assert index.npoints == 0
+    ids, distances = index.search(np.zeros(4, dtype=np.float32), 1)
+    assert len(ids) == len(distances) == 0
+
+    vectors = np.eye(4, dtype=np.float32)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda item: index.add(*item), zip(vectors, range(10, 14))))
+    assert index.npoints == 4
+    ids, distances = index.search(vectors[2], 2)
+    assert ids[0] == 12
+    assert distances[0] == 0
+    index.remove(11)
+    index.save()
+    del index
+
+    restored = ccannpy.Index.load(prefix, threads=2)
+    assert restored.npoints == 3
+    ids, _ = restored.search(vectors[1], 3)
+    assert 11 not in ids
+    assert set(ids) == {10, 12, 13}
+    restored.add(vectors[1], 14)
+    assert restored.search(vectors[1], 1)[0][0] == 14
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_recover_after_process_kill(tmp_path, empty):
+    prefix = str(tmp_path / "index")
+    vectors = (np.empty((0, 64), dtype=np.float32) if empty else
+               np.random.default_rng(19).random((300, 64), dtype=np.float32))
+    tags = np.empty(0, dtype=np.uint32) if empty else np.arange(1000, 1300, dtype=np.uint32)
+    index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
+    del index
+
+    script = """
+import os, signal, sys
+import numpy as np
+import ccannpy
+index = ccannpy.Index.load(sys.argv[1], threads=2)
+index.add(np.full(64, 7, dtype=np.float32), 9001)
+os.kill(os.getpid(), signal.SIGKILL)
+"""
+    result = subprocess.run([sys.executable, "-c", script, prefix], check=False, timeout=20)
+    assert result.returncode == -signal.SIGKILL
+    restored = ccannpy.Index.load(prefix, threads=2)
+    assert restored.npoints == len(vectors) + 1
+    ids, distances = restored.search(np.full(64, 7, dtype=np.float32), 1)
+    assert ids[0] == 9001
+    assert distances[0] == 0
+
+
+def test_empty_index_truncates_incomplete_record(tmp_path):
+    prefix = str(tmp_path / "index")
+    index = ccannpy.Index.create(prefix, np.empty((0, 4), dtype=np.float32),
+                                 np.empty(0, dtype=np.uint32))
+    vector = np.array([1, 2, 3, 4], dtype=np.float32)
+    index.add(vector, 41)
+    del index
+
+    with open(prefix + "_ccann.flat", "ab") as file:
+        file.write(b"\x01\x2a\x00")
+    restored = ccannpy.Index.load(prefix)
+    assert restored.npoints == 1
+    assert restored.search(vector, 1)[0][0] == 41
+    restored.add(vector + 1, 42)
+    del restored
+    loaded = ccannpy.Index.load(prefix)
+    assert loaded.npoints == 2
+    assert set(loaded.search(vector, 2)[0]) == {41, 42}

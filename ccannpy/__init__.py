@@ -1,3 +1,197 @@
-from ._native import Index, Metric
+"""Python interface for persistent CCANN indexes."""
+
+import os
+import struct
+import threading
+import zlib
+
+import numpy as np
+
+from ._native import Index as _NativeIndex
+from ._native import Metric
+
+
+_MAGIC = b"CCANNF01"
+_HEADER = struct.Struct("<8sI")
+_RECORD_HEAD = struct.Struct("<BI")
+_CHECKSUM = struct.Struct("<I")
+
+
+def _write_all(fd, data):
+    offset = 0
+    while offset < len(data):
+        written = os.write(fd, data[offset:])
+        if written == 0:
+            raise OSError("Short index write")
+        offset += written
+
+
+class _FlatIndex:
+    def __init__(self, fd, dimension):
+        self._fd = fd
+        self._dimension = dimension
+        self._lock = threading.Lock()
+        self._vectors = {}
+        self._seen_tags = set()
+
+    @classmethod
+    def create(cls, prefix, dimension):
+        path = prefix + "_ccann.flat"
+        if os.path.exists(prefix + "_disk.index"):
+            raise ValueError("Index already exists at prefix")
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            _write_all(fd, _HEADER.pack(_MAGIC, dimension))
+            os.fsync(fd)
+            directory = os.open(os.path.dirname(path) or ".", os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            return cls(fd, dimension)
+        except BaseException:
+            os.close(fd)
+            raise
+
+    @classmethod
+    def load(cls, prefix):
+        fd = os.open(prefix + "_ccann.flat", os.O_RDWR)
+        result = None
+        try:
+            header = os.pread(fd, _HEADER.size, 0)
+            if len(header) != _HEADER.size:
+                raise ValueError("Corrupt empty index header")
+            magic, dimension = _HEADER.unpack(header)
+            if magic != _MAGIC or dimension == 0:
+                raise ValueError("Corrupt empty index header")
+            result = cls(fd, dimension)
+            size = os.fstat(fd).st_size
+            record_size = _RECORD_HEAD.size + dimension * 4 + _CHECKSUM.size
+            offset = _HEADER.size
+            while offset + record_size <= size:
+                record = os.pread(fd, record_size, offset)
+                body, checksum = record[:-4], _CHECKSUM.unpack(record[-4:])[0]
+                if len(record) != record_size or zlib.crc32(body) != checksum:
+                    if offset + record_size < size:
+                        raise ValueError("Corrupt empty index record")
+                    break
+                operation, tag = _RECORD_HEAD.unpack(body[:_RECORD_HEAD.size])
+                if operation == 1 and tag not in result._seen_tags:
+                    result._seen_tags.add(tag)
+                    result._vectors[tag] = np.frombuffer(body, dtype="<f4", count=dimension,
+                                                         offset=_RECORD_HEAD.size).copy()
+                elif operation == 2 and tag in result._vectors:
+                    del result._vectors[tag]
+                else:
+                    raise ValueError("Corrupt empty index record")
+                offset += record_size
+            if offset != size:
+                os.ftruncate(fd, offset)
+                os.fsync(fd)
+            os.lseek(fd, offset, os.SEEK_SET)
+            return result
+        except BaseException:
+            if result is not None:
+                result._fd = None
+            os.close(fd)
+            raise
+
+    def _check_vector(self, vector):
+        if (not isinstance(vector, np.ndarray) or vector.dtype != np.float32 or
+                vector.ndim != 1 or vector.shape[0] != self._dimension or
+                not vector.flags.c_contiguous):
+            raise ValueError("Vector dimension or dtype does not match the index")
+
+    def _append(self, operation, tag, vector):
+        body = _RECORD_HEAD.pack(operation, tag) + vector.tobytes()
+        start = os.lseek(self._fd, 0, os.SEEK_END)
+        try:
+            _write_all(self._fd, body + _CHECKSUM.pack(zlib.crc32(body)))
+            os.fsync(self._fd)
+        except BaseException:
+            os.ftruncate(self._fd, start)
+            os.fsync(self._fd)
+            raise
+
+    def add(self, vector, tag):
+        self._check_vector(vector)
+        if not 0 <= tag <= 0xFFFFFFFF:
+            raise ValueError("Tag must be uint32")
+        with self._lock:
+            if tag in self._seen_tags:
+                raise ValueError("Tag already exists")
+            self._append(1, tag, vector)
+            self._seen_tags.add(tag)
+            self._vectors[tag] = vector.copy()
+
+    def search(self, query, k, search_l=64):
+        self._check_vector(query)
+        if not 0 < k <= search_l <= 4096:
+            raise ValueError("Require 0 < k <= search_l <= 4096")
+        with self._lock:
+            if not self._vectors:
+                return np.empty(0, dtype=np.uint32), np.empty(0, dtype=np.float32)
+            tags = np.fromiter(self._vectors, dtype=np.uint32)
+            vectors = np.stack(tuple(self._vectors.values()))
+        distances = np.sum((vectors - query) ** 2, axis=1)
+        nearest = np.argsort(distances, kind="stable")[:k]
+        return tags[nearest], distances[nearest].astype(np.float32)
+
+    def remove(self, tag):
+        with self._lock:
+            if tag not in self._seen_tags:
+                raise ValueError("Tag does not exist")
+            if tag in self._vectors:
+                self._append(2, tag, np.zeros(self._dimension, dtype=np.float32))
+                del self._vectors[tag]
+
+    def save(self):
+        with self._lock:
+            os.fsync(self._fd)
+
+    @property
+    def npoints(self):
+        with self._lock:
+            return len(self._vectors)
+
+    @property
+    def dimension(self):
+        return self._dimension
+
+    def __del__(self):
+        if getattr(self, "_fd", None) is not None:
+            os.close(self._fd)
+            self._fd = None
+
+
+class Index:
+    def __init__(self, backend):
+        self._backend = backend
+
+    @classmethod
+    def create(cls, prefix, vectors, tags, metric=Metric.L2, threads=4):
+        if not threads or metric != Metric.L2:
+            raise ValueError("Only L2 and positive threads are supported")
+        if isinstance(vectors, np.ndarray) and vectors.ndim == 2 and vectors.shape[0] == 0:
+            if (vectors.dtype != np.float32 or vectors.shape[1] == 0 or
+                    not isinstance(tags, np.ndarray) or tags.dtype != np.uint32 or
+                    tags.shape != (0,)):
+                raise ValueError("Expected empty float32 vectors and uint32 tags")
+            return cls(_FlatIndex.create(prefix, vectors.shape[1]))
+        if os.path.exists(prefix + "_ccann.flat"):
+            raise ValueError("Index already exists at prefix")
+        return cls(_NativeIndex.create(prefix, vectors, tags, metric, threads))
+
+    @classmethod
+    def load(cls, prefix, metric=Metric.L2, threads=4):
+        if os.path.exists(prefix + "_ccann.flat"):
+            if not threads or metric != Metric.L2:
+                raise ValueError("Only L2 and positive threads are supported")
+            return cls(_FlatIndex.load(prefix))
+        return cls(_NativeIndex.load(prefix, metric, threads))
+
+    def __getattr__(self, name):
+        return getattr(self._backend, name)
+
 
 __all__ = ["Index", "Metric"]
