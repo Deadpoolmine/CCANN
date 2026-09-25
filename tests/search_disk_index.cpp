@@ -13,7 +13,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include "linux_aligned_file_reader.h"
+#include "linux_aligned_file_io.h"
 
 #define WARMUP false
 
@@ -91,15 +91,15 @@ int search_disk_index(int argc, char **argv) {
     calc_recall_flag = true;
   }
 
-  std::shared_ptr<AlignedFileReader> reader = nullptr;
-  std::shared_ptr<AlignedFileReader> pq_compressed_writer = nullptr;
-  std::shared_ptr<AlignedFileReader> tags_writer = nullptr;
-  std::shared_ptr<AlignedFileReader> id2loc_writer = nullptr;
+  std::shared_ptr<AlignedFileIO> reader = nullptr;
+  std::shared_ptr<AlignedFileIO> pq_compressed_writer = nullptr;
+  std::shared_ptr<AlignedFileIO> tags_writer = nullptr;
+  std::shared_ptr<AlignedFileIO> id2loc_writer = nullptr;
 
-  reader.reset(new LinuxAlignedFileReader());
-  pq_compressed_writer.reset(new LinuxAlignedFileReader());
-  tags_writer.reset(new LinuxAlignedFileReader());
-  id2loc_writer.reset(new LinuxAlignedFileReader());
+  reader.reset(new LinuxAlignedFileIO());
+  pq_compressed_writer.reset(new LinuxAlignedFileIO());
+  tags_writer.reset(new LinuxAlignedFileIO());
+  id2loc_writer.reset(new LinuxAlignedFileIO());
 
   std::unique_ptr<ccann::SSDIndex<T>> _pFlashIndex(new ccann::SSDIndex<T>(
       m, reader, pq_compressed_writer, tags_writer, id2loc_writer, SearchMode(search_mode), tags_flag));

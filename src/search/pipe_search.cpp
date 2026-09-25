@@ -1,4 +1,4 @@
-#include "aligned_file_reader.h"
+#include "aligned_file_io.h"
 #include "libcuckoo/cuckoohash_map.hh"
 #include "neighbor.h"
 #include "ssd_index.h"

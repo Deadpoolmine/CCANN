@@ -11,7 +11,7 @@
 #include <iomanip>
 #include <omp.h>
 
-#include "aligned_file_reader.h"
+#include "aligned_file_io.h"
 #include "concurrent_queue.h"
 #include "parameters.h"
 #include "percentile_stats.h"
@@ -126,9 +126,9 @@ namespace ccann {
 #define PRUNE_BATCH_SIZE (this->range / 16)
 #define SEARCH_BATCH_SIZE(nnbr) (nnbr / 2)
 
-    SSDIndex(ccann::Metric m, std::shared_ptr<AlignedFileReader> &fileReader,
-             std::shared_ptr<AlignedFileReader> &pqCompressedWriter, std::shared_ptr<AlignedFileReader> &tagsWriter,
-             std::shared_ptr<AlignedFileReader> &id2locWriter, bool single_file_index, bool tags = false,
+    SSDIndex(ccann::Metric m, std::shared_ptr<AlignedFileIO> &fileReader,
+             std::shared_ptr<AlignedFileIO> &pqCompressedWriter, std::shared_ptr<AlignedFileIO> &tagsWriter,
+             std::shared_ptr<AlignedFileIO> &id2locWriter, bool single_file_index, bool tags = false,
              Parameters *parameters = nullptr);
 
     ~SSDIndex();
@@ -325,10 +325,10 @@ namespace ccann {
 
     std::string _disk_index_file;
 
-    std::shared_ptr<AlignedFileReader> &reader;  // index reader/writer
-    std::shared_ptr<AlignedFileReader> &tags_writer;
-    std::shared_ptr<AlignedFileReader> &pq_compressed_writer;
-    std::shared_ptr<AlignedFileReader> &id2loc_writer;
+    std::shared_ptr<AlignedFileIO> &reader;  // index reader/writer
+    std::shared_ptr<AlignedFileIO> &tags_writer;
+    std::shared_ptr<AlignedFileIO> &pq_compressed_writer;
+    std::shared_ptr<AlignedFileIO> &id2loc_writer;
 
     // PQ data
     // n_chunks = # of chunks ndims is split into
@@ -437,7 +437,7 @@ namespace ccann {
     uint32_t beam_width, l_index, range, maxc;
     float alpha;
     // assumed max thread, only the first nthreads are initialized.
-    AlignedFileReader *pq_reader = nullptr;
+    AlignedFileIO *pq_reader = nullptr;
     v2::SparseLockTable<uint64_t> page_lock_table, vec_lock_table, page_idx_lock_table, idx_lock_table;
     std::shared_mutex merge_lock;  // serve search during merge.
 

@@ -19,7 +19,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include "linux_aligned_file_reader.h"
+#include "linux_aligned_file_io.h"
 
 #define WARMUP false
 
@@ -99,8 +99,8 @@ int search_disk_index(int argc, char **argv) {
     calc_recall_flag = true;
   }
 
-  std::shared_ptr<AlignedFileReader> reader = nullptr;
-  reader.reset(new LinuxAlignedFileReader());
+  std::shared_ptr<AlignedFileIO> reader = nullptr;
+  reader.reset(new LinuxAlignedFileIO());
 
   ccann::Index<T> _pFlashIndex(m, query_dim, (uint64_t) 1e8, false, false, false);
   _pFlashIndex.load_from_disk_index(index_prefix_path);

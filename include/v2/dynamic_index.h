@@ -52,10 +52,10 @@ namespace ccann {
     _u32 _num_threads;  // search + insert + delete
     uint64_t _beamwidth;
 
-    std::shared_ptr<AlignedFileReader> reader = nullptr;
-    std::shared_ptr<AlignedFileReader> pq_compressed_writer = nullptr;
-    std::shared_ptr<AlignedFileReader> tags_writer = nullptr;
-    std::shared_ptr<AlignedFileReader> id2loc_writer = nullptr;
+    std::shared_ptr<AlignedFileIO> reader = nullptr;
+    std::shared_ptr<AlignedFileIO> pq_compressed_writer = nullptr;
+    std::shared_ptr<AlignedFileIO> tags_writer = nullptr;
+    std::shared_ptr<AlignedFileIO> id2loc_writer = nullptr;
 
     SSDIndex<T, TagT> *_disk_index = nullptr;
 

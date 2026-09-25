@@ -10,7 +10,7 @@
 #include <malloc.h>
 #include <cstdio>
 
-class AlignedFileReader {
+class AlignedFileIO {
  public:
   // returns the thread-specific io ring.
   // If not constructed, it will register the thread (using the flag) and return the context.
@@ -19,7 +19,7 @@ class AlignedFileReader {
   // For all the other algorithms, we use 0 to disable polling.
   virtual void *get_ctx(int flag = 0) = 0;
 
-  virtual ~AlignedFileReader() {};
+  virtual ~AlignedFileIO() {};
 
   // Open & close ops
   // Blocking calls

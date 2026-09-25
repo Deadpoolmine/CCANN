@@ -1,10 +1,10 @@
 #pragma once
 
-#include "aligned_file_reader.h"
+#include "aligned_file_io.h"
 #include "v2/lock_table.h"
 #include <urcu.h>
 
-class LinuxAlignedFileReader : public AlignedFileReader {
+class LinuxAlignedFileIO : public AlignedFileIO {
  private:
   uint64_t file_sz;
   FileHandle file_desc;
@@ -17,15 +17,15 @@ class LinuxAlignedFileReader : public AlignedFileReader {
   struct dax_region {
     void *addr;
     uint64_t size;
-    LinuxAlignedFileReader *owner;
+    LinuxAlignedFileIO *owner;
     rcu_head rcu;
   };
 
   void unmap_dax_region(struct rcu_head *rcu);
   std::atomic<dax_region *> pm_region;
 
-  LinuxAlignedFileReader();
-  ~LinuxAlignedFileReader();
+  LinuxAlignedFileIO();
+  ~LinuxAlignedFileIO();
 
   void *get_ctx(int flag = 0);
 

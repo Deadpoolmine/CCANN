@@ -5,8 +5,8 @@
 // #include <rocksdb/utilities/optimistic_transaction_db.h>
 // #include <rocksdb/utilities/transaction.h>
 #include <string>
-#include "aligned_file_reader.h"
-#include "linux_aligned_file_reader.h"
+#include "aligned_file_io.h"
+#include "linux_aligned_file_io.h"
 #include "query_buf.h"
 #include "utils.h"
 #include "libcuckoo/cuckoohash_map.hh"
@@ -33,7 +33,7 @@ namespace v2 {
   class Journal {
    public:
     std::string db_name;
-    std::shared_ptr<AlignedFileReader> journal_writer;
+    std::shared_ptr<AlignedFileIO> journal_writer;
     std::mutex j_mutex;
     // rocksdb::OptimisticTransactionDB *db;
 
@@ -45,7 +45,7 @@ namespace v2 {
       //   LOG(INFO) << "Failed to open db: " << db_name;
       //   exit(1);
       // }
-      journal_writer = std::make_shared<LinuxAlignedFileReader>();
+      journal_writer = std::make_shared<LinuxAlignedFileIO>();
       journal_writer->open(db_name, true, true);
     }
     ~Journal() {

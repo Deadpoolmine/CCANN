@@ -27,7 +27,7 @@
 #include "ssd_index.h"
 #include "parameters.h"
 
-#include "linux_aligned_file_reader.h"
+#include "linux_aligned_file_io.h"
 
 namespace ccann {
 #define BLOCK_SIZE (64 * 1024 * 1024)  // 64 MiB
@@ -205,10 +205,10 @@ namespace ccann {
     _disk_index_prefix_out = disk_prefix_out;
     _dist_comp = dist;
 
-    reader.reset(new LinuxAlignedFileReader());
-    pq_compressed_writer.reset(new LinuxAlignedFileReader());
-    tags_writer.reset(new LinuxAlignedFileReader());
-    id2loc_writer.reset(new LinuxAlignedFileReader());
+    reader.reset(new LinuxAlignedFileIO());
+    pq_compressed_writer.reset(new LinuxAlignedFileIO());
+    tags_writer.reset(new LinuxAlignedFileIO());
+    id2loc_writer.reset(new LinuxAlignedFileIO());
 
     bool has_tags = std::filesystem::exists(disk_prefix_in + "_disk.index.tags");
     _disk_index = new ccann::SSDIndex<T, TagT>(this->_dist_metric, reader, pq_compressed_writer, tags_writer,

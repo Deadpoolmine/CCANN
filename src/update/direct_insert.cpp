@@ -1,4 +1,4 @@
-#include "aligned_file_reader.h"
+#include "aligned_file_io.h"
 #include "libcuckoo/cuckoohash_map.hh"
 #include "ssd_index.h"
 #include <algorithm>
@@ -19,7 +19,7 @@
 #include <tuple>
 #include <boost/crc.hpp>
 
-#include "linux_aligned_file_reader.h"
+#include "linux_aligned_file_io.h"
 #include <sys/syscall.h>
 #include <unistd.h>
 

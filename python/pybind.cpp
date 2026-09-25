@@ -2,6 +2,7 @@
 #include <pybind11/pybind11.h>
 #include <filesystem>
 #include <fstream>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -14,7 +15,7 @@
 
 #include "aux_utils.h"
 #include "distance.h"
-#include "linux_aligned_file_reader.h"
+#include "linux_aligned_file_io.h"
 #include "utils.h"
 #include "v2/dynamic_index.h"
 
@@ -35,7 +36,9 @@ class PySSDIndex {
     std::set<uint32_t> unique_tags(tags.data(), tags.data() + tags.shape(0));
     if (unique_tags.size() != static_cast<size_t>(tags.shape(0)))
       throw py::value_error("Tags must be unique");
-    if (std::filesystem::exists(prefix + "_disk.index"))
+    if (std::filesystem::exists(prefix + "_disk.index") ||
+        std::filesystem::exists(prefix + "_ccann.active") ||
+        std::filesystem::exists(prefix + "_ccann.flat"))
       throw py::value_error("Index already exists at prefix");
     std::string data_path = prefix + "_ccann_data.bin";
     std::string tags_path = prefix + "_ccann_tags.bin";
@@ -56,6 +59,12 @@ class PySSDIndex {
 
   static std::unique_ptr<PySSDIndex> load(const std::string &prefix, ccann::Metric metric,
                                           uint32_t threads) {
+    return load_at(prefix, read_generation(prefix), metric, threads);
+  }
+
+  static std::unique_ptr<PySSDIndex> load_at(const std::string &root, uint64_t generation,
+                                             ccann::Metric metric, uint32_t threads) {
+    std::string prefix = generation_prefix(root, generation);
     if (threads == 0)
       throw py::value_error("threads must be positive");
     if (metric != ccann::Metric::L2)
@@ -92,7 +101,7 @@ class PySSDIndex {
     if (std::filesystem::exists(prefix + "_disk.index.id2loc") &&
         std::filesystem::file_size(prefix + "_disk.index.id2loc") < uint64_t(pq_count) * sizeof(uint32_t))
       throw py::value_error("Corrupt SSD location mapping");
-    auto result = std::unique_ptr<PySSDIndex>(new PySSDIndex(prefix, dim, metric, threads));
+    auto result = std::unique_ptr<PySSDIndex>(new PySSDIndex(root, prefix, generation, dim, metric, threads));
     result->open();
     size_t count, loaded_tag_dim;
     std::vector<uint32_t> persisted_tags;
@@ -104,6 +113,7 @@ class PySSDIndex {
       result->removed_.insert(tag);
       result->index_->lazy_delete(tag);
     }
+    result->compact_if_needed();
     return result;
   }
 
@@ -113,6 +123,7 @@ class PySSDIndex {
     if (!known_tags_.insert(tag).second)
       throw py::value_error("Tag already exists");
     index_->insert(vector.data(), tag);
+    compact_if_needed();
   }
 
   py::tuple search(Vectors query, uint32_t k, uint32_t search_l) {
@@ -140,14 +151,19 @@ class PySSDIndex {
     append_removed(tag);
     removed_.insert(tag);
     index_->lazy_delete(tag);
+    compact_if_needed();
   }
 
-  void merge(const std::string &output_prefix) {
-    std::lock_guard<std::mutex> lock(mu_);
-    if (output_prefix == prefix_ || std::filesystem::exists(output_prefix + "_disk.index") ||
-        std::filesystem::exists(output_prefix + "_ccann.meta") ||
-        std::filesystem::exists(output_prefix + "_ccann.flat"))
-      throw py::value_error("Merge output prefix already exists");
+  void compact_if_needed() {
+    constexpr size_t kMergeThreshold = 10000;
+    if (removed_.size() < kMergeThreshold || index_->_disk_index->cur_id.load() == removed_.size())
+      return;
+    uint64_t next_generation = generation_ + 1;
+    std::string output_prefix = generation_prefix(root_prefix_, next_generation);
+    while (std::filesystem::exists(output_prefix + "_disk.index") ||
+           std::filesystem::exists(output_prefix + "_ccann.meta")) {
+      output_prefix = generation_prefix(root_prefix_, ++next_generation);
+    }
     index_->_disk_index->flush_commits();
     auto deleted = read_removed(prefix_ + "_ccann.removed");
     std::vector<uint32_t> tags(deleted.begin(), deleted.end());
@@ -169,6 +185,26 @@ class PySSDIndex {
     }
     ::close(fd);
     sync_directory(meta_path);
+    auto next = load_at(root_prefix_, next_generation, metric_, threads_);
+    sync_file(output_prefix + "_disk.index.id2loc");
+    bool published = false;
+    std::exception_ptr publication_error;
+    try {
+      publish_generation(next_generation, published);
+    } catch (...) {
+      if (!published) throw;
+      publication_error = std::current_exception();
+    }
+    std::string old_prefix = prefix_;
+    index_.swap(next->index_);
+    distance_.swap(next->distance_);
+    prefix_.swap(next->prefix_);
+    known_tags_.swap(next->known_tags_);
+    removed_.clear();
+    generation_ = next_generation;
+    next.reset();
+    if (!publication_error) cleanup_generation(old_prefix);
+    if (publication_error) std::rethrow_exception(publication_error);
   }
 
   uint64_t npoints() const {
@@ -179,8 +215,65 @@ class PySSDIndex {
   uint32_t dimension() const { return dim_; }
 
  private:
-  PySSDIndex(std::string prefix, uint32_t dim, ccann::Metric metric, uint32_t threads)
-      : prefix_(std::move(prefix)), dim_(dim), metric_(metric), threads_(threads) {}
+  PySSDIndex(std::string root, std::string prefix, uint64_t generation, uint32_t dim,
+             ccann::Metric metric, uint32_t threads)
+      : root_prefix_(std::move(root)), prefix_(std::move(prefix)), generation_(generation),
+        dim_(dim), metric_(metric), threads_(threads) {}
+
+  static std::string generation_prefix(const std::string &root, uint64_t generation) {
+    return generation == 0 ? root : root + "_ccann_gen_" + std::to_string(generation);
+  }
+
+  static uint64_t read_generation(const std::string &root) {
+    std::ifstream file(root + "_ccann.active");
+    if (!file) {
+      if (std::filesystem::exists(root + "_ccann.active"))
+        throw std::runtime_error("Failed to read active index generation");
+      return 0;
+    }
+    std::string line, extra;
+    if (!std::getline(file, line) || std::getline(file, extra))
+      throw py::value_error("Corrupt active index generation");
+    size_t parsed = 0;
+    uint64_t generation;
+    try {
+      generation = std::stoull(line, &parsed);
+    } catch (const std::exception &) {
+      throw py::value_error("Corrupt active index generation");
+    }
+    if (generation == 0 || parsed != line.size())
+      throw py::value_error("Corrupt active index generation");
+    return generation;
+  }
+
+  void publish_generation(uint64_t generation, bool &published) {
+    std::string path = root_prefix_ + "_ccann.active";
+    std::string temporary = path + ".tmp";
+    int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) throw std::system_error(errno, std::generic_category(), "open active generation");
+    try {
+      write_all(fd, std::to_string(generation) + "\n");
+      if (::fsync(fd) != 0)
+        throw std::system_error(errno, std::generic_category(), "sync active generation");
+    } catch (...) {
+      ::close(fd);
+      throw;
+    }
+    ::close(fd);
+    std::filesystem::rename(temporary, path);
+    published = true;
+    sync_directory(path);
+  }
+
+  static void cleanup_generation(const std::string &prefix) {
+    for (const char *suffix : {"_disk.index", "_disk.index.tags", "_disk.index.id2loc",
+                               "_pq_compressed.bin", "_pq_pivots.bin", "_partition.bin.aligned",
+                               "_ccann.meta", "_ccann.removed"}) {
+      std::error_code error;
+      std::filesystem::remove(prefix + suffix, error);
+    }
+    sync_directory(prefix);
+  }
 
   static void write_all(int fd, const std::string &data) {
     size_t offset = 0;
@@ -299,7 +392,9 @@ class PySSDIndex {
       throw py::value_error("Stored index dimension does not match metadata");
   }
 
+  std::string root_prefix_;
   std::string prefix_;
+  uint64_t generation_;
   uint32_t dim_;
   ccann::Metric metric_;
   uint32_t threads_;
@@ -324,9 +419,7 @@ PYBIND11_MODULE(_native, m) {
            py::call_guard<py::gil_scoped_release>())
       .def("search", &PySSDIndex::search, py::arg("query").noconvert(), py::arg("k"),
            py::arg("search_l") = 64)
-      .def("remove", &PySSDIndex::remove)
-      .def("merge", &PySSDIndex::merge, py::arg("output_prefix"),
-           py::call_guard<py::gil_scoped_release>())
+      .def("remove", &PySSDIndex::remove, py::call_guard<py::gil_scoped_release>())
       .def_property_readonly("npoints", &PySSDIndex::npoints)
       .def_property_readonly("dimension", &PySSDIndex::dimension);
 }

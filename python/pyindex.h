@@ -7,7 +7,7 @@
 #include <shared_mutex>
 #include "aux_utils.h"
 #include "index.h"
-#include "linux_aligned_file_reader.h"
+#include "linux_aligned_file_io.h"
 #include "partition_and_pq.h"
 #include "ssd_index.h"
 #include "utils.h"
@@ -49,7 +49,7 @@ class PyIndex : public BasePyIndex {
   PyIndex() = delete;
 
   explicit PyIndex(IndexParams params) : params_(std::move(params)) {
-    reader_.reset(new LinuxAlignedFileReader());
+    reader_.reset(new LinuxAlignedFileIO());
     disk_index_.reset(new ccann::SSDIndex<T, TagT>(params_.metric, reader_, false, true));
     omp_set_num_threads(params_.max_nthreads);
 
@@ -263,7 +263,7 @@ class PyIndex : public BasePyIndex {
 
  private:
   bool use_disk_index_ = false;
-  std::shared_ptr<AlignedFileReader> reader_;
+  std::shared_ptr<AlignedFileIO> reader_;
   std::shared_mutex save_mu_;  // save mutex.
   std::string data_path_;
   std::string cur_index_prefix_;

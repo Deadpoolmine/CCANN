@@ -1,3 +1,4 @@
+import os
 import signal
 import subprocess
 import sys
@@ -253,7 +254,7 @@ def test_graph_remove_appends_log_and_repairs_incomplete_tail(ssd_index):
     assert ccannpy.Index.load(prefix, threads=2).npoints == 297
 
 
-def test_graph_remove_survives_process_kill_and_merge(ssd_index, tmp_path):
+def test_graph_remove_survives_process_kill(ssd_index, tmp_path):
     prefix, vectors, tags = ssd_index
     index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
     del index
@@ -271,43 +272,122 @@ os.kill(os.getpid(), signal.SIGKILL)
     assert restored.npoints == 299
     restored.remove(1001)
     restored.add(np.full(64, 7, dtype=np.float32), 9001)
-    output = str(tmp_path / "merged")
-    compacted = restored.merge(output)
+    assert not hasattr(restored, "merge")
+    assert not (tmp_path / "index_ccann.active").exists()
+    del restored
+    restored = ccannpy.Index.load(prefix, threads=2)
     assert restored.npoints == 299
-    assert compacted.npoints == 299
-    assert not (tmp_path / "merged_ccann.removed").exists()
-    with open(output + "_disk.index.tags", "rb") as file:
-        count, width = np.fromfile(file, dtype=np.uint32, count=2)
-        assert width == 1
-        persisted = np.fromfile(file, dtype=np.uint32, count=int(count))
-    assert len(persisted) == 299
-    assert 1000 not in persisted and 1001 not in persisted and 9001 in persisted
-    del compacted
-    reloaded = ccannpy.Index.load(output, threads=2)
-    assert reloaded.npoints == 299
-    assert reloaded.search(np.full(64, 7, dtype=np.float32), 1)[0][0] == 9001
-    restored.remove(1002)
-    second_output = str(tmp_path / "merged_again")
-    again = restored.merge(second_output)
-    assert again.npoints == 298
-    with open(second_output + "_disk.index.tags", "rb") as file:
-        count, _ = np.fromfile(file, dtype=np.uint32, count=2)
-        second_tags = np.fromfile(file, dtype=np.uint32, count=int(count))
-    assert 1002 not in second_tags
-    assert 1002 in persisted
+    assert restored.search(np.full(64, 7, dtype=np.float32), 1)[0][0] == 9001
 
 
-def test_empty_index_merge_compacts_deleted_records(tmp_path):
+def test_empty_index_auto_compacts_deleted_records(tmp_path, monkeypatch):
+    assert ccannpy._MERGE_THRESHOLD == 10000
+    monkeypatch.setattr(ccannpy, "_MERGE_THRESHOLD", 3)
     prefix = str(tmp_path / "empty")
     index = ccannpy.Index.create(prefix, np.empty((0, 4), dtype=np.float32),
                                  np.empty(0, dtype=np.uint32))
     for tag in range(5):
         index.add(np.full(4, tag, dtype=np.float32), tag)
+    assert not hasattr(index, "merge")
     index.remove(1)
     index.remove(3)
-    output = str(tmp_path / "merged")
-    compacted = index.merge(output)
-    assert compacted.npoints == 3
-    assert ccannpy.Index.load(output).npoints == 3
-    assert set(compacted.search(np.zeros(4, dtype=np.float32), 3)[0]) == {0, 2, 4}
-    assert (tmp_path / "merged_ccann.flat").stat().st_size < (tmp_path / "empty_ccann.flat").stat().st_size
+    before = (tmp_path / "empty_ccann.flat").stat().st_size
+    index.remove(4)
+    assert index.npoints == 2
+    assert (tmp_path / "empty_ccann.flat").stat().st_size < before
+    assert ccannpy.Index.load(prefix).npoints == 2
+    index.add(np.full(4, 6, dtype=np.float32), 6)
+    del index
+    assert set(ccannpy.Index.load(prefix).search(np.zeros(4, dtype=np.float32), 3)[0]) == {0, 2, 6}
+
+
+def test_graph_auto_merge_at_10000_deletes(tmp_path):
+    prefix = str(tmp_path / "index")
+    vectors = np.random.default_rng(31).random((10001, 32), dtype=np.float32)
+    tags = np.arange(10001, dtype=np.uint32)
+    index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
+    assert not hasattr(index, "merge")
+    del index
+    script = """
+import os, signal, sys
+import ccannpy
+index = ccannpy.Index.load(sys.argv[1], threads=2)
+for tag in range(9999):
+    index.remove(tag)
+assert index.npoints == 2
+assert not os.path.exists(sys.argv[1] + "_ccann.active")
+index.remove(9999)
+assert index.npoints == 1
+os.kill(os.getpid(), signal.SIGKILL)
+"""
+    result = subprocess.run([sys.executable, "-c", script, prefix], check=False, timeout=90)
+    assert result.returncode == -signal.SIGKILL
+    assert (tmp_path / "index_ccann.active").read_text() == "1\n"
+    assert not (tmp_path / "index_disk.index").exists()
+    assert not (tmp_path / "index_ccann.removed").exists()
+    with pytest.raises(ValueError):
+        ccannpy.Index.create(prefix, vectors, tags, threads=2)
+
+    restored = ccannpy.Index.load(prefix, threads=2)
+    assert restored.npoints == 1
+    assert restored.search(vectors[10000], 1)[0][0] == 10000
+    restored.add(np.full(32, 9, dtype=np.float32), 20000)
+    del restored
+    restored = ccannpy.Index.load(prefix, threads=2)
+    assert restored.npoints == 2
+    with open(prefix + "_ccann_gen_1_disk.index.tags", "rb") as file:
+        count, width = np.fromfile(file, dtype=np.uint32, count=2)
+        persisted = np.fromfile(file, dtype=np.uint32, count=int(count))
+    assert width == 1
+    assert set(persisted) == {10000, 20000}
+
+
+def test_graph_all_deleted_at_threshold_can_accept_new_add(tmp_path):
+    prefix = str(tmp_path / "index")
+    vectors = np.random.default_rng(32).random((10000, 32), dtype=np.float32)
+    tags = np.arange(10000, dtype=np.uint32)
+    index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
+    for tag in range(9999):
+        index.remove(tag)
+    assert index.npoints == 1
+    del index
+
+    restored = ccannpy.Index.load(prefix, threads=2)
+    assert restored.npoints == 1
+    restored.remove(9999)
+    assert restored.npoints == 0
+    del restored
+    restored = ccannpy.Index.load(prefix, threads=2)
+    assert restored.npoints == 0
+    restored.add(np.full(32, 7, dtype=np.float32), 20000)
+    assert restored.npoints == 1
+    assert (tmp_path / "index_ccann.active").read_text() == "1\n"
+    del restored
+    loaded = ccannpy.Index.load(prefix, threads=2)
+    assert loaded.npoints == 1
+    with open(prefix + "_ccann_gen_1_disk.index.tags", "rb") as file:
+        count, _ = np.fromfile(file, dtype=np.uint32, count=2)
+        persisted = np.fromfile(file, dtype=np.uint32, count=int(count))
+    assert count == 1
+    assert persisted[0] == 20000
+
+
+def test_graph_load_finishes_interrupted_auto_merge(tmp_path):
+    prefix = str(tmp_path / "index")
+    vectors = np.random.default_rng(33).random((10001, 32), dtype=np.float32)
+    tags = np.arange(10001, dtype=np.uint32)
+    index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
+    for tag in range(9999):
+        index.remove(tag)
+    del index
+
+    log_fd = os.open(prefix + "_ccann.removed", os.O_WRONLY | os.O_APPEND)
+    try:
+        os.write(log_fd, b"9999\n")
+        os.fsync(log_fd)
+    finally:
+        os.close(log_fd)
+    restored = ccannpy.Index.load(prefix, threads=2)
+    assert restored.npoints == 1
+    assert (tmp_path / "index_ccann.active").read_text() == "1\n"
+    assert restored.search(vectors[10000], 1)[0][0] == 10000

@@ -16,6 +16,7 @@ _MAGIC = b"CCANNF01"
 _HEADER = struct.Struct("<8sI")
 _RECORD_HEAD = struct.Struct("<BI")
 _CHECKSUM = struct.Struct("<I")
+_MERGE_THRESHOLD = 10000
 
 
 def _write_all(fd, data):
@@ -28,17 +29,19 @@ def _write_all(fd, data):
 
 
 class _FlatIndex:
-    def __init__(self, fd, dimension):
+    def __init__(self, fd, dimension, path):
         self._fd = fd
         self._dimension = dimension
+        self._path = path
         self._lock = threading.Lock()
         self._vectors = {}
         self._seen_tags = set()
+        self._pending_removals = 0
 
     @classmethod
     def create(cls, prefix, dimension):
         path = prefix + "_ccann.flat"
-        if os.path.exists(prefix + "_disk.index"):
+        if os.path.exists(prefix + "_disk.index") or os.path.exists(prefix + "_ccann.active"):
             raise ValueError("Index already exists at prefix")
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
         try:
@@ -49,14 +52,15 @@ class _FlatIndex:
                 os.fsync(directory)
             finally:
                 os.close(directory)
-            return cls(fd, dimension)
+            return cls(fd, dimension, path)
         except BaseException:
             os.close(fd)
             raise
 
     @classmethod
     def load(cls, prefix):
-        fd = os.open(prefix + "_ccann.flat", os.O_RDWR)
+        path = prefix + "_ccann.flat"
+        fd = os.open(path, os.O_RDWR)
         result = None
         try:
             header = os.pread(fd, _HEADER.size, 0)
@@ -65,7 +69,7 @@ class _FlatIndex:
             magic, dimension = _HEADER.unpack(header)
             if magic != _MAGIC or dimension == 0:
                 raise ValueError("Corrupt empty index header")
-            result = cls(fd, dimension)
+            result = cls(fd, dimension, path)
             size = os.fstat(fd).st_size
             record_size = _RECORD_HEAD.size + dimension * 4 + _CHECKSUM.size
             offset = _HEADER.size
@@ -83,6 +87,7 @@ class _FlatIndex:
                                                          offset=_RECORD_HEAD.size).copy()
                 elif operation == 2 and tag in result._vectors:
                     del result._vectors[tag]
+                    result._pending_removals += 1
                 else:
                     raise ValueError("Corrupt empty index record")
                 offset += record_size
@@ -90,9 +95,12 @@ class _FlatIndex:
                 os.ftruncate(fd, offset)
                 os.fsync(fd)
             os.lseek(fd, offset, os.SEEK_SET)
+            if result._pending_removals >= _MERGE_THRESHOLD:
+                result._compact_locked()
             return result
         except BaseException:
             if result is not None:
+                fd = result._fd
                 result._fd = None
             os.close(fd)
             raise
@@ -145,28 +153,36 @@ class _FlatIndex:
             if tag in self._vectors:
                 self._append(2, tag, np.zeros(self._dimension, dtype=np.float32))
                 del self._vectors[tag]
+                self._pending_removals += 1
+                if self._pending_removals >= _MERGE_THRESHOLD:
+                    self._compact_locked()
 
-    def merge(self, output_prefix):
-        with self._lock:
-            path = output_prefix + "_ccann.flat"
-            if os.path.exists(path) or os.path.exists(output_prefix + "_disk.index"):
-                raise ValueError("Merge output prefix already exists")
-            directory = os.path.dirname(path) or "."
-            fd, temporary = tempfile.mkstemp(prefix=".ccann-merge-", dir=directory)
+    def _compact_locked(self):
+        directory = os.path.dirname(self._path) or "."
+        fd, temporary = tempfile.mkstemp(prefix=".ccann-merge-", dir=directory)
+        published = False
+        try:
+            _write_all(fd, _HEADER.pack(_MAGIC, self._dimension))
+            for tag, vector in self._vectors.items():
+                body = _RECORD_HEAD.pack(1, tag) + vector.tobytes()
+                _write_all(fd, body + _CHECKSUM.pack(zlib.crc32(body)))
+            os.fsync(fd)
+            os.replace(temporary, self._path)
+            published = True
+            old_fd, self._fd = self._fd, fd
+            fd = None
+            os.close(old_fd)
+            self._seen_tags = set(self._vectors)
+            self._pending_removals = 0
+            directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
             try:
-                _write_all(fd, _HEADER.pack(_MAGIC, self._dimension))
-                for tag, vector in self._vectors.items():
-                    body = _RECORD_HEAD.pack(1, tag) + vector.tobytes()
-                    _write_all(fd, body + _CHECKSUM.pack(zlib.crc32(body)))
-                os.fsync(fd)
-                os.link(temporary, path)
-                directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
+                os.fsync(directory_fd)
             finally:
+                os.close(directory_fd)
+        finally:
+            if fd is not None:
                 os.close(fd)
+            if not published:
                 os.unlink(temporary)
 
     @property
@@ -199,7 +215,7 @@ class Index:
                     tags.shape != (0,)):
                 raise ValueError("Expected empty float32 vectors and uint32 tags")
             return cls(_FlatIndex.create(prefix, vectors.shape[1]), threads)
-        if os.path.exists(prefix + "_ccann.flat"):
+        if os.path.exists(prefix + "_ccann.flat") or os.path.exists(prefix + "_ccann.active"):
             raise ValueError("Index already exists at prefix")
         return cls(_NativeIndex.create(prefix, vectors, tags, metric, threads), threads)
 
@@ -213,10 +229,6 @@ class Index:
 
     def __getattr__(self, name):
         return getattr(self._backend, name)
-
-    def merge(self, output_prefix):
-        self._backend.merge(output_prefix)
-        return self.load(output_prefix, threads=self._threads)
 
 
 __all__ = ["Index", "Metric"]

@@ -1,4 +1,4 @@
-#include "aligned_file_reader.h"
+#include "aligned_file_io.h"
 #include "ssd_index.h"
 #include <malloc.h>
 #include <filesystem>
@@ -29,10 +29,10 @@ namespace ccann {
   template struct DiskNode<int8_t>;
 
   template<typename T, typename TagT>
-  SSDIndex<T, TagT>::SSDIndex(ccann::Metric m, std::shared_ptr<AlignedFileReader> &fileReader,
-                              std::shared_ptr<AlignedFileReader> &pqCompressedWriter,
-                              std::shared_ptr<AlignedFileReader> &tagsWriter,
-                              std::shared_ptr<AlignedFileReader> &id2locWriter, bool single_file_index, bool tags,
+  SSDIndex<T, TagT>::SSDIndex(ccann::Metric m, std::shared_ptr<AlignedFileIO> &fileReader,
+                              std::shared_ptr<AlignedFileIO> &pqCompressedWriter,
+                              std::shared_ptr<AlignedFileIO> &tagsWriter,
+                              std::shared_ptr<AlignedFileIO> &id2locWriter, bool single_file_index, bool tags,
                               Parameters *params)
       : reader(fileReader), tags_writer(tagsWriter), pq_compressed_writer(pqCompressedWriter),
         id2loc_writer(id2locWriter), data_is_normalized(false), enable_tags(tags) {
@@ -52,7 +52,7 @@ namespace ccann {
 
     this->dist_cmp.reset(ccann::get_distance_function<T>(m));
 
-    // this->pq_reader = new LinuxAlignedFileReader();
+    // this->pq_reader = new LinuxAlignedFileIO();
     if (params != nullptr) {
       this->beam_width = params->Get<uint32_t>("beamwidth");
       this->l_index = params->Get<uint32_t>("L");
@@ -413,7 +413,7 @@ namespace ccann {
               << " #dim: " << data_dim << " #aligned_dim: " << aligned_dim << " #chunks: " << n_chunks;
 
     // read index metadata
-    // open AlignedFileReader handle to index_file
+    // open AlignedFileIO handle to index_file
     std::string index_fname(disk_index_file);
     std::string pq_compressed_file(pq_compressed_vectors);
     std::string id2loc_file(disk_index_file + ".id2loc");

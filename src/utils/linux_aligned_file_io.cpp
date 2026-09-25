@@ -1,4 +1,4 @@
-#include "linux_aligned_file_reader.h"
+#include "linux_aligned_file_io.h"
 
 #include <filesystem>
 #include <cassert>
@@ -6,7 +6,7 @@
 #include <cstdio>
 #include <iostream>
 #include <sys/mman.h>
-#include "aligned_file_reader.h"
+#include "aligned_file_io.h"
 #include "liburing.h"
 #include <urcu.h>
 
@@ -138,12 +138,12 @@ namespace {
   }
 }  // namespace
 
-LinuxAlignedFileReader::LinuxAlignedFileReader() {
+LinuxAlignedFileIO::LinuxAlignedFileIO() {
   this->file_desc = -1;
   this->pm_region.store(nullptr);
 }
 
-LinuxAlignedFileReader::~LinuxAlignedFileReader() {
+LinuxAlignedFileIO::~LinuxAlignedFileIO() {
   int64_t ret;
 
   synchronize_rcu();
@@ -204,14 +204,14 @@ namespace {
   }
 }
 
-void *LinuxAlignedFileReader::get_ctx(int flag) {
+void *LinuxAlignedFileIO::get_ctx(int flag) {
   if (unlikely(ioctx::ring == nullptr)) {
     register_thread(flag);
   }
   return ioctx::ring.get()->ring;
 }
 
-void LinuxAlignedFileReader::register_thread(int flag) {
+void LinuxAlignedFileIO::register_thread(int flag) {
   if (ioctx::ring == nullptr) {
     ioctx::ring = std::make_unique<io_uring_ctx>();
     ioctx::ring->ring = new io_uring();
@@ -222,17 +222,17 @@ void LinuxAlignedFileReader::register_thread(int flag) {
   }
 }
 
-void LinuxAlignedFileReader::deregister_thread() {
+void LinuxAlignedFileIO::deregister_thread() {
   // io_uring_queue_exit(ioctx::ring);
   // delete ioctx::ring;
   // ioctx::ring = nullptr;
 }
 
-void LinuxAlignedFileReader::deregister_all_threads() {
+void LinuxAlignedFileIO::deregister_all_threads() {
   return;
 }
 
-void LinuxAlignedFileReader::open(const std::string &fname, bool enable_writes = false, bool enable_create = false) {
+void LinuxAlignedFileIO::open(const std::string &fname, bool enable_writes = false, bool enable_create = false) {
   int flags = O_DIRECT | O_LARGEFILE | O_RDWR;
   if (enable_create) {
     flags |= O_CREAT;
@@ -248,7 +248,7 @@ void LinuxAlignedFileReader::open(const std::string &fname, bool enable_writes =
   //  std::cerr << "Opened file : " << fname << std::endl;
 }
 
-void LinuxAlignedFileReader::close() {
+void LinuxAlignedFileIO::close() {
   //  int64_t ret;
 
   // check to make sure file_desc is closed
@@ -259,7 +259,7 @@ void LinuxAlignedFileReader::close() {
   //  assert(ret != -1);
 }
 
-void LinuxAlignedFileReader::read(std::vector<IORequest> &read_reqs, void *ctx, bool async) {
+void LinuxAlignedFileIO::read(std::vector<IORequest> &read_reqs, void *ctx, bool async) {
   assert(this->file_desc != -1);
   enter_dax_rcu();
   auto current_region = this->pm_region.load();
@@ -294,7 +294,7 @@ void LinuxAlignedFileReader::read(std::vector<IORequest> &read_reqs, void *ctx, 
   }
 }
 
-void LinuxAlignedFileReader::write(std::vector<IORequest> &write_reqs, void *ctx, bool async) {
+void LinuxAlignedFileIO::write(std::vector<IORequest> &write_reqs, void *ctx, bool async) {
   assert(this->file_desc != -1);
   execute_io(ctx, this->file_desc, write_reqs, 100, true);
   if (async == true) {
@@ -302,17 +302,17 @@ void LinuxAlignedFileReader::write(std::vector<IORequest> &write_reqs, void *ctx
   }
 }
 
-void LinuxAlignedFileReader::read_fd(int fd, std::vector<IORequest> &read_reqs, void *ctx) {
+void LinuxAlignedFileIO::read_fd(int fd, std::vector<IORequest> &read_reqs, void *ctx) {
   assert(this->file_desc != -1);
   execute_io(ctx, fd, read_reqs);
 }
 
-void LinuxAlignedFileReader::write_fd(int fd, std::vector<IORequest> &write_reqs, void *ctx) {
+void LinuxAlignedFileIO::write_fd(int fd, std::vector<IORequest> &write_reqs, void *ctx) {
   assert(this->file_desc != -1);
   execute_io(ctx, fd, write_reqs, 0, true);
 }
 
-void LinuxAlignedFileReader::atomic_truncate(uint64_t size) {
+void LinuxAlignedFileIO::atomic_truncate(uint64_t size) {
   assert(this->file_desc != -1);
   int ret = ftruncate(this->file_desc, size);
   if (ret != 0) {
@@ -321,7 +321,7 @@ void LinuxAlignedFileReader::atomic_truncate(uint64_t size) {
   fsync(this->file_desc);
 }
 
-void LinuxAlignedFileReader::sync() {
+void LinuxAlignedFileIO::sync() {
   assert(this->file_desc != -1);
   if (fsync(this->file_desc) != 0) {
     LOG(ERROR) << "Failed to sync " << file_path << ": " << strerror(errno);
@@ -331,7 +331,7 @@ void LinuxAlignedFileReader::sync() {
 
 #define EXTEND_FACTOR (1.5)
 
-void *LinuxAlignedFileReader::mmap_hint(IORequest &req, bool write, uint64_t &out_size) {
+void *LinuxAlignedFileIO::mmap_hint(IORequest &req, bool write, uint64_t &out_size) {
   assert(this->file_desc != -1);
 
   int prot = PROT_READ;
@@ -403,7 +403,7 @@ void *LinuxAlignedFileReader::mmap_hint(IORequest &req, bool write, uint64_t &ou
   return addr;
 }
 
-uint64_t LinuxAlignedFileReader::file_size() {
+uint64_t LinuxAlignedFileIO::file_size() {
   assert(this->file_desc != -1);
   struct stat st;
   uint64_t size;
@@ -418,7 +418,7 @@ uint64_t LinuxAlignedFileReader::file_size() {
   return size;
 }
 
-void LinuxAlignedFileReader::unmap_dax_region(struct rcu_head *rcu) {
+void LinuxAlignedFileIO::unmap_dax_region(struct rcu_head *rcu) {
   dax_region *pm_region = caa_container_of(rcu, dax_region, rcu);
   IORequest um_req(0, pm_region->size, nullptr, 0, 0);
   munmap(pm_region->addr, um_req);
@@ -426,11 +426,11 @@ void LinuxAlignedFileReader::unmap_dax_region(struct rcu_head *rcu) {
 }
 
 void unmap_dax_region_callback(struct rcu_head *rcu) {
-  LinuxAlignedFileReader::dax_region *pm_region = caa_container_of(rcu, LinuxAlignedFileReader::dax_region, rcu);
+  LinuxAlignedFileIO::dax_region *pm_region = caa_container_of(rcu, LinuxAlignedFileIO::dax_region, rcu);
   pm_region->owner->unmap_dax_region(rcu);
 }
 
-void LinuxAlignedFileReader::munmap(void *addr, IORequest &req) {
+void LinuxAlignedFileIO::munmap(void *addr, IORequest &req) {
   uint64_t length = req.len;
   uint64_t offset = req.offset;
 
@@ -448,7 +448,7 @@ void LinuxAlignedFileReader::munmap(void *addr, IORequest &req) {
   LOG(INFO) << "munmaped addr: " << addr << " len: " << length << " offset: " << offset;
 }
 
-void *LinuxAlignedFileReader::get_dax(uint64_t hint_size, bool init = false) {
+void *LinuxAlignedFileIO::get_dax(uint64_t hint_size, bool init = false) {
   enter_dax_rcu();
   hint_size = std::max<uint64_t>(hint_size, SECTOR_LEN);
   auto current_region = this->pm_region.load();
@@ -477,31 +477,31 @@ void *LinuxAlignedFileReader::get_dax(uint64_t hint_size, bool init = false) {
   return current_region->addr;
 }
 
-void LinuxAlignedFileReader::put_dax() {
+void LinuxAlignedFileIO::put_dax() {
   leave_dax_rcu();
 }
 
-void LinuxAlignedFileReader::init_dax(uint64_t hint_size) {
+void LinuxAlignedFileIO::init_dax(uint64_t hint_size) {
   get_dax(hint_size, true);
   put_dax();
 }
 
-void LinuxAlignedFileReader::exit_dax() {
+void LinuxAlignedFileIO::exit_dax() {
   if (this->pm_region != nullptr) {
     auto current_region = this->pm_region.load();
     this->unmap_dax_region(&current_region->rcu);
   }
 }
 
-void LinuxAlignedFileReader::flush_dax(void *p, uint64_t size) {
+void LinuxAlignedFileIO::flush_dax(void *p, uint64_t size) {
   // The mapped writes are persisted at the next ordering barrier.
 }
 
-void LinuxAlignedFileReader::barrier_dax() {
+void LinuxAlignedFileIO::barrier_dax() {
   sync();
 }
 
-bool LinuxAlignedFileReader::check_addr_in_pm(const void *addr) {
+bool LinuxAlignedFileIO::check_addr_in_pm(const void *addr) {
   if (this->pm_region.load() == nullptr) {
     return false;
   }
@@ -518,7 +518,7 @@ bool LinuxAlignedFileReader::check_addr_in_pm(const void *addr) {
   return false;
 }
 
-void LinuxAlignedFileReader::send_io(IORequest &req, void *ctx, bool write) {
+void LinuxAlignedFileIO::send_io(IORequest &req, void *ctx, bool write) {
   io_uring *ring = (io_uring *) ctx;
   enter_dax_rcu();
   bool on_pm = this->pm_region.load() != nullptr;
@@ -550,7 +550,7 @@ void LinuxAlignedFileReader::send_io(IORequest &req, void *ctx, bool write) {
   leave_dax_rcu();
 }
 
-void LinuxAlignedFileReader::send_io(std::vector<IORequest> &reqs, void *ctx, bool write) {
+void LinuxAlignedFileIO::send_io(std::vector<IORequest> &reqs, void *ctx, bool write) {
   io_uring *ring = (io_uring *) ctx;
   for (uint64_t j = 0; j < reqs.size(); j++) {
     auto sqe = io_uring_get_sqe(ring);
@@ -565,7 +565,7 @@ void LinuxAlignedFileReader::send_io(std::vector<IORequest> &reqs, void *ctx, bo
   io_uring_submit(ring);
 }
 
-int LinuxAlignedFileReader::poll(void *ctx) {
+int LinuxAlignedFileIO::poll(void *ctx) {
   io_uring *ring = (io_uring *) ctx;
   io_uring_cqe *cqe = nullptr;
   int ret = io_uring_peek_cqe(ring, &cqe);
@@ -583,7 +583,7 @@ int LinuxAlignedFileReader::poll(void *ctx) {
   return 0;
 }
 
-void LinuxAlignedFileReader::poll_all(void *ctx) {
+void LinuxAlignedFileIO::poll_all(void *ctx) {
   io_uring *ring = (io_uring *) ctx;
   static __thread io_uring_cqe *cqes[MAX_EVENTS];
   int ret = io_uring_peek_batch_cqe(ring, cqes, MAX_EVENTS);
@@ -602,7 +602,7 @@ void LinuxAlignedFileReader::poll_all(void *ctx) {
   }
 }
 
-void LinuxAlignedFileReader::poll_wait(void *ctx) {
+void LinuxAlignedFileIO::poll_wait(void *ctx) {
   io_uring *ring = (io_uring *) ctx;
   io_uring_cqe *cqe = nullptr;
   int ret = 0;
@@ -620,7 +620,7 @@ void LinuxAlignedFileReader::poll_wait(void *ctx) {
 }
 
 
-int LinuxAlignedFileReader::send_read_no_alloc(IORequest &req, void *ring) {
+int LinuxAlignedFileIO::send_read_no_alloc(IORequest &req, void *ring) {
 
   if (!v2::cache.get(req.offset / SECTOR_LEN, (uint8_t *) req.buf)) {
     send_io(req, ring, false);
@@ -630,7 +630,7 @@ int LinuxAlignedFileReader::send_read_no_alloc(IORequest &req, void *ring) {
   return 1;
 }
 
-int LinuxAlignedFileReader::send_read_no_alloc(std::vector<IORequest> &reqs, void *ring) {
+int LinuxAlignedFileIO::send_read_no_alloc(std::vector<IORequest> &reqs, void *ring) {
   std::vector<IORequest> disk_read_reqs;
   // fetch from cache.
   for (auto &req : reqs) {
@@ -645,7 +645,7 @@ int LinuxAlignedFileReader::send_read_no_alloc(std::vector<IORequest> &reqs, voi
   return disk_read_reqs.size();
 }
 
-void LinuxAlignedFileReader::read_alloc(std::vector<IORequest> &read_reqs, void *ctx, std::vector<uint64_t> *page_ref) {
+void LinuxAlignedFileIO::read_alloc(std::vector<IORequest> &read_reqs, void *ctx, std::vector<uint64_t> *page_ref) {
   std::vector<IORequest> disk_read_reqs;
 
   // TODO(gh): introduce size_per_io to cache.
