@@ -589,7 +589,7 @@ namespace ccann {
 
     unsigned l = 0;
     Neighbor nn;
-    tsl::robin_set<unsigned> inserted_into_pool;
+    std::unordered_set<unsigned> inserted_into_pool;
     inserted_into_pool.reserve(Lsize * 20);
 
     for (auto id : init_ids) {
