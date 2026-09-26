@@ -23,6 +23,8 @@ endif()
 add_library(${PROJECT_NAME} ${PROJECT_CPP})
 set_target_properties(${PROJECT_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(WIN32)
-  target_compile_options(${PROJECT_NAME} PRIVATE "/FI${PROJECT_SOURCE_DIR}/include/platform_compat.h")
+  target_compile_options(${PROJECT_NAME} PRIVATE
+    "/FI${PROJECT_SOURCE_DIR}/include/platform_compat.h"
+    "/openmp:experimental")
   target_link_libraries(${PROJECT_NAME} PUBLIC OpenMP::OpenMP_CXX)
 endif()

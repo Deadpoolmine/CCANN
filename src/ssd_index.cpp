@@ -605,7 +605,7 @@ namespace ccann {
       id2loc_.reserve(tag_v.size());
 
 #pragma omp parallel for num_threads(max_nthreads)
-      for (size_t i = 0; i < tag_num; ++i) {
+      for (int64_t i = 0; i < static_cast<int64_t>(tag_num); ++i) {
         tags.insert_or_assign(i, tag_v[i]);
       }
     }

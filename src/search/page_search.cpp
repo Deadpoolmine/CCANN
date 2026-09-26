@@ -49,7 +49,7 @@ namespace ccann {
         uint64_t nxt_p = std::min(p + n_parts_per_read, partition_nums);
         part.read((char *) part_buf.data(), sizeof(unsigned) * n_parts_per_read * (1 + nnodes_per_sector));
 #pragma omp parallel for schedule(dynamic)
-        for (uint64_t i = p; i < nxt_p; ++i) {
+        for (int64_t i = static_cast<int64_t>(p); i < static_cast<int64_t>(nxt_p); ++i) {
           uint32_t s = part_buf[(i - p) * (1 + nnodes_per_sector)];
           PageArr tmp_arr;
           memcpy(tmp_arr.data(), part_buf.data() + (i - p) * (1 + nnodes_per_sector) + 1,
@@ -70,14 +70,14 @@ namespace ccann {
       LOG(INFO) << partition_file << " does not exist, use equal partition mapping";
 // use equal mapping for id2loc and page_layout.
 #pragma omp parallel for
-      for (size_t i = 0; i < this->num_points; ++i) {
+      for (int64_t i = 0; i < static_cast<int64_t>(this->num_points); ++i) {
         id2loc_.insert_or_assign(i, i);
       }
 
       uint64_t page_offset = loc_sector_no(0);
       uint64_t num_sectors = (num_points + nnodes_per_sector - 1) / nnodes_per_sector;
 #pragma omp parallel for
-      for (size_t i = 0; i < num_sectors; ++i) {
+      for (int64_t i = 0; i < static_cast<int64_t>(num_sectors); ++i) {
         PageArr tmp_arr;
         for (uint32_t j = 0; j < nnodes_per_sector; ++j) {
           uint64_t id = i * nnodes_per_sector + j;

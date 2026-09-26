@@ -396,7 +396,7 @@ namespace ccann {
       in.read(buf, n_sectors_to_read * kSectorLen);
 
 #pragma omp parallel for
-      for (uint64_t loc = loc_st; loc < loc_ed; ++loc) {
+      for (int64_t loc = static_cast<int64_t>(loc_st); loc < static_cast<int64_t>(loc_ed); ++loc) {
         uint64_t id = loc;
 #pragma omp critical
         {
