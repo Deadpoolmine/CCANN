@@ -31,6 +31,16 @@ inline int ftruncate(int fd, int64_t length) {
   if (result != 0) errno = result;
   return result == 0 ? 0 : -1;
 }
+inline int truncate(const char *path, int64_t length) {
+  const int fd = _open(path, _O_RDWR | _O_BINARY);
+  if (fd < 0) return -1;
+  const int result = ftruncate(fd, length);
+  const int saved_errno = errno;
+  _close(fd);
+  errno = saved_errno;
+  return result;
+}
+inline int sched_getcpu() { return static_cast<int>(GetCurrentProcessorNumber()); }
 inline int64_t lseek(int fd, int64_t offset, int origin) { return _lseeki64(fd, offset, origin); }
 
 inline std::mutex &positioned_io_mutex() {

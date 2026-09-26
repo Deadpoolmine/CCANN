@@ -491,11 +491,7 @@ namespace ccann {
 
     // Step 3. Update PQ Compressed Vector, this can be done in background
     // Step 4. Update in memory graph if possible
-    auto commit_task = new CommitTask{
-        .pq_coords = std::move(in_pq_coords),
-        .target_id = target_id,
-        .point = commit_point,
-    };
+    auto commit_task = new CommitTask{std::move(in_pq_coords), target_id, false, commit_point};
 
     commit_tasks.push(commit_task);
 

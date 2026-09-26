@@ -33,8 +33,13 @@ namespace ccann {
 #define MAX_THREADS 32
   void copy_block(const std::string &src, const std::string &dst, size_t offset, size_t size,
                   std::atomic<size_t> &progress) {
+#ifdef _WIN32
+    int fd_src = _open(src.c_str(), _O_RDONLY | _O_BINARY);
+    int fd_dst = _open(dst.c_str(), _O_WRONLY | _O_CREAT | _O_BINARY, 0666);
+#else
     int fd_src = open(src.c_str(), O_RDONLY);
     int fd_dst = open(dst.c_str(), O_WRONLY | O_CREAT, 0666);
+#endif
     if (fd_src < 0 || fd_dst < 0)
       return;
 
@@ -274,8 +279,7 @@ namespace ccann {
 
     }
 
-    auto final_task = new typename SSDIndex<T, TagT>::CommitTask{
-        .pq_coords = std::vector<uint8_t>(), .target_id = 0, .terminate = true, .point = nullptr};
+    auto final_task = new typename SSDIndex<T, TagT>::CommitTask{{}, 0, true, nullptr};
     _disk_index->commit_tasks.push(final_task);
     _disk_index->commit_tasks.push_notify_all();
     if (_disk_index->commit_thread_->joinable()) {
