@@ -307,12 +307,14 @@ def test_graph_auto_merge_at_10000_deletes(tmp_path):
     index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
     assert hasattr(index, "merge")
     del index
+    with open(prefix + "_ccann.removed", "wb") as file:
+        file.write(b"".join(f"{tag}\n".encode() for tag in range(9999)))
+        file.flush()
+        os.fsync(file.fileno())
     script = """
 import os, sys
 import ccannpy
 index = ccannpy.Index.load(sys.argv[1], threads=2)
-for tag in range(9999):
-    index.remove(tag)
 assert index.npoints == 2
 assert not os.path.exists(sys.argv[1] + "_ccann.active")
 index.remove(9999)
@@ -346,10 +348,11 @@ def test_graph_all_deleted_at_threshold_can_accept_new_add(tmp_path):
     vectors = np.random.default_rng(32).random((10000, 32), dtype=np.float32)
     tags = np.arange(10000, dtype=np.uint32)
     index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
-    for tag in range(9999):
-        index.remove(tag)
-    assert index.npoints == 1
     del index
+    with open(prefix + "_ccann.removed", "wb") as file:
+        file.write(b"".join(f"{tag}\n".encode() for tag in range(9999)))
+        file.flush()
+        os.fsync(file.fileno())
 
     restored = ccannpy.Index.load(prefix, threads=2)
     assert restored.npoints == 1
@@ -376,16 +379,12 @@ def test_graph_load_finishes_interrupted_auto_merge(tmp_path):
     vectors = np.random.default_rng(33).random((10001, 32), dtype=np.float32)
     tags = np.arange(10001, dtype=np.uint32)
     index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
-    for tag in range(9999):
-        index.remove(tag)
     del index
 
-    log_fd = os.open(prefix + "_ccann.removed", os.O_WRONLY | os.O_APPEND)
-    try:
-        os.write(log_fd, b"9999\n")
-        os.fsync(log_fd)
-    finally:
-        os.close(log_fd)
+    with open(prefix + "_ccann.removed", "wb") as file:
+        file.write(b"".join(f"{tag}\n".encode() for tag in range(10000)))
+        file.flush()
+        os.fsync(file.fileno())
     restored = ccannpy.Index.load(prefix, threads=2)
     assert restored.npoints == 1
     assert (tmp_path / "index_ccann.active").read_text() == "1\n"
