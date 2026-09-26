@@ -577,7 +577,7 @@ namespace ccann {
   std::pair<uint32_t, uint32_t> Index<T, TagT>::iterate_to_fixed_point(const T *node_coords, const unsigned Lsize,
                                                                        const std::vector<unsigned> &init_ids,
                                                                        std::vector<Neighbor> &expanded_nodes_info,
-                                                                       tsl::robin_set<unsigned> &expanded_nodes_ids,
+                                                                       std::unordered_set<unsigned> &expanded_nodes_ids,
                                                                        std::vector<Neighbor> &best_L_nodes,
                                                                        bool ret_frozen) {
     best_L_nodes.resize(Lsize + 1);
@@ -677,7 +677,7 @@ namespace ccann {
     std::vector<uint32_t> init_ids;
     init_ids.push_back(this->_ep);
     std::vector<Neighbor> best_L_nodes;
-    tsl::robin_set<uint32_t> expanded_nodes_ids;
+    std::unordered_set<uint32_t> expanded_nodes_ids;
     this->iterate_to_fixed_point(node_coords, Lindex, init_ids, expanded_nodes_info, expanded_nodes_ids, best_L_nodes,
                                  return_frozen_pt);
     for (Neighbor &einf : expanded_nodes_info) {
@@ -689,7 +689,7 @@ namespace ccann {
   template<typename T, typename TagT>
   void Index<T, TagT>::get_expanded_nodes(const size_t node_id, const unsigned Lindex, std::vector<unsigned> init_ids,
                                           std::vector<Neighbor> &expanded_nodes_info,
-                                          tsl::robin_set<unsigned> &expanded_nodes_ids) {
+                                          std::unordered_set<unsigned> &expanded_nodes_ids) {
     const T *node_coords = _data + _aligned_dim * node_id;
     std::vector<Neighbor> best_L_nodes;
 
@@ -872,7 +872,7 @@ namespace ccann {
 #endif
       // search.
       std::vector<Neighbor> pool;
-      tsl::robin_set<unsigned> visited;
+      std::unordered_set<unsigned> visited;
       pool.reserve(2 * L);
       visited.reserve(2 * L);
       get_expanded_nodes(node, L, init_ids, pool, visited);
@@ -1103,7 +1103,7 @@ namespace ccann {
     std::vector<unsigned> init_ids;
     tsl::robin_set<unsigned> visited(10 * L);
     std::vector<Neighbor> best, expanded_nodes_info;
-    tsl::robin_set<unsigned> expanded_nodes_ids;
+    std::unordered_set<unsigned> expanded_nodes_ids;
 
     if (init_ids.size() == 0) {
       init_ids.emplace_back(_ep);
@@ -1134,7 +1134,7 @@ namespace ccann {
     std::vector<unsigned> init_ids;
     tsl::robin_set<unsigned> visited(10 * L);
     std::vector<Neighbor> best_L_nodes, expanded_nodes_info;
-    tsl::robin_set<unsigned> expanded_nodes_ids;
+    std::unordered_set<unsigned> expanded_nodes_ids;
 
     std::shared_lock<std::shared_timed_mutex> lock(_update_lock);
 
@@ -1170,7 +1170,7 @@ namespace ccann {
                                                        float *distances) {
     tsl::robin_set<unsigned> visited(10 * L);
     std::vector<Neighbor> best_L_nodes, expanded_nodes_info;
-    tsl::robin_set<unsigned> expanded_nodes_ids;
+    std::unordered_set<unsigned> expanded_nodes_ids;
 
     std::shared_lock<std::shared_timed_mutex> lock(_update_lock);
 
@@ -1728,7 +1728,7 @@ namespace ccann {
     //    assert(_has_built);
     std::vector<Neighbor> pool;
     std::vector<Neighbor> tmp;
-    tsl::robin_set<unsigned> visited;
+    std::unordered_set<unsigned> visited;
 
     {
       std::shared_lock<std::shared_timed_mutex> lock(_update_lock);
