@@ -893,6 +893,11 @@ namespace ccann {
 
       inter_insert(node, pruned_list, parameters);
 
+#ifdef _WIN32
+      if (node % 500 == 0)
+        LOG(INFO) << "Windows graph build: " << node << "/" << n_vecs_to_visit
+                  << " nodes in " << link_timer.elapsed() / 1000000.0 << "s";
+#endif
       if (node % 100000 == 0) {
         std::cerr << "\r" << (100.0 * node) / (n_vecs_to_visit) << "% of index build completed.";
       }
