@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <unordered_set>
 #include <stdexcept>
 #include <system_error>
 #include <cerrno>
@@ -281,7 +282,7 @@ class PySSDIndex {
     index_->_disk_index->flush_commits();
     auto deleted = read_removed(prefix_ + "_ccann.removed");
     std::vector<uint32_t> tags(deleted.begin(), deleted.end());
-    tsl::robin_set<uint32_t> tag_set(deleted.begin(), deleted.end());
+    std::unordered_set<uint32_t> tag_set(deleted.begin(), deleted.end());
     index_->_disk_index->merge_deletes(prefix_, output_prefix, tags, tag_set, threads_, 20);
     for (const char *suffix : {"_disk.index", "_disk.index.tags", "_pq_compressed.bin", "_pq_pivots.bin"})
       sync_file(output_prefix + suffix);

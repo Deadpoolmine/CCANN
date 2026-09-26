@@ -11,6 +11,7 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include "parameters.h"
 
 namespace ccann {
@@ -68,7 +69,7 @@ namespace ccann {
     int active_index = 0;                 // reflects value of writable index
     int active_delete_set = 0;            // reflects active _deletion_set
     std::shared_timed_mutex delete_lock;  // lock to access _deletion_set
-    tsl::robin_set<TagT> deletion_sets[2];
+    std::unordered_set<TagT> deletion_sets[2];
     std::vector<TagT> deleted_tags[2];
     std::atomic_bool active_del[2];
 
