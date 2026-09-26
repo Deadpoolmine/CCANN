@@ -1,7 +1,9 @@
 import os
+import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from threading import Barrier
 
 import numpy as np
@@ -17,6 +19,25 @@ def ssd_index(tmp_path):
     tags = np.arange(1000, 1300, dtype=np.uint32)
     prefix = str(tmp_path / "index")
     return prefix, vectors, tags
+
+
+@pytest.fixture(scope="module")
+def large_ssd_base(tmp_path_factory):
+    prefix = str(tmp_path_factory.mktemp("large_ssd") / "index")
+    vectors = np.random.default_rng(31).random((10000, 32), dtype=np.float32)
+    tags = np.arange(10000, dtype=np.uint32)
+    index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
+    del index
+    return prefix, vectors
+
+
+@pytest.fixture
+def large_ssd_index(tmp_path, large_ssd_base):
+    source_prefix, vectors = large_ssd_base
+    prefix = str(tmp_path / "index")
+    for source in Path(source_prefix).parent.glob("index_*"):
+        shutil.copy2(source, prefix + source.name[len("index"):])
+    return prefix, vectors
 
 
 def test_ssd_python_round_trip(tmp_path):
@@ -300,12 +321,14 @@ def test_empty_index_auto_compacts_deleted_records(tmp_path, monkeypatch):
     assert set(ccannpy.Index.load(prefix).search(np.zeros(4, dtype=np.float32), 3)[0]) == {0, 2, 6}
 
 
-def test_graph_auto_merge_at_10000_deletes(tmp_path):
-    prefix = str(tmp_path / "index")
-    vectors = np.random.default_rng(31).random((10001, 32), dtype=np.float32)
+def test_graph_auto_merge_at_10000_deletes(tmp_path, large_ssd_index):
+    prefix, base_vectors = large_ssd_index
+    extra = np.full(32, 5, dtype=np.float32)
+    vectors = np.vstack((base_vectors, extra))
     tags = np.arange(10001, dtype=np.uint32)
-    index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
+    index = ccannpy.Index.load(prefix, threads=2)
     assert hasattr(index, "merge")
+    index.add(extra, 10000)
     del index
     with open(prefix + "_ccann.removed", "wb") as file:
         file.write(b"".join(f"{tag}\n".encode() for tag in range(9999)))
@@ -343,12 +366,8 @@ os._exit(17)
     assert set(persisted) == {10000, 20000}
 
 
-def test_graph_all_deleted_at_threshold_can_accept_new_add(tmp_path):
-    prefix = str(tmp_path / "index")
-    vectors = np.random.default_rng(32).random((10000, 32), dtype=np.float32)
-    tags = np.arange(10000, dtype=np.uint32)
-    index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
-    del index
+def test_graph_all_deleted_at_threshold_can_accept_new_add(tmp_path, large_ssd_index):
+    prefix, _ = large_ssd_index
     with open(prefix + "_ccann.removed", "wb") as file:
         file.write(b"".join(f"{tag}\n".encode() for tag in range(9999)))
         file.flush()
@@ -374,11 +393,11 @@ def test_graph_all_deleted_at_threshold_can_accept_new_add(tmp_path):
     assert persisted[0] == 20000
 
 
-def test_graph_load_finishes_interrupted_auto_merge(tmp_path):
-    prefix = str(tmp_path / "index")
-    vectors = np.random.default_rng(33).random((10001, 32), dtype=np.float32)
-    tags = np.arange(10001, dtype=np.uint32)
-    index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
+def test_graph_load_finishes_interrupted_auto_merge(tmp_path, large_ssd_index):
+    prefix, _ = large_ssd_index
+    extra = np.full(32, 5, dtype=np.float32)
+    index = ccannpy.Index.load(prefix, threads=2)
+    index.add(extra, 10000)
     del index
 
     with open(prefix + "_ccann.removed", "wb") as file:
@@ -388,7 +407,7 @@ def test_graph_load_finishes_interrupted_auto_merge(tmp_path):
     restored = ccannpy.Index.load(prefix, threads=2)
     assert restored.npoints == 1
     assert (tmp_path / "index_ccann.active").read_text() == "1\n"
-    assert restored.search(vectors[10000], 1)[0][0] == 10000
+    assert restored.search(extra, 1)[0][0] == 10000
 
 
 def test_graph_manual_merge_and_snapshot(ssd_index, tmp_path):
