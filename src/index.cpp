@@ -746,6 +746,9 @@ namespace ccann {
     unsigned range = parameter.Get<unsigned>("R");
     unsigned maxc = parameter.Get<unsigned>("C");
     float alpha = parameter.Get<float>("alpha");
+#ifdef _WIN32
+    if (pool.size() >= 40) std::cerr << "prune sort size=" << pool.size() << " alpha=" << alpha << std::endl;
+#endif
 
     if (pool.size() == 0) {
       crash();
@@ -755,12 +758,18 @@ namespace ccann {
 
     // sort the pool based on distance to query
     std::sort(pool.begin(), pool.end());
+#ifdef _WIN32
+    if (pool.size() >= 40) std::cerr << "prune sort done" << std::endl;
+#endif
 
     std::vector<Neighbor> result;
     result.reserve(range);
     std::vector<float> occlude_factor(pool.size(), 0);
 
     occlude_list(pool, alpha, range, maxc, result, occlude_factor);
+#ifdef _WIN32
+    if (pool.size() >= 40) std::cerr << "prune occlude done" << std::endl;
+#endif
 
     /* Add all the nodes in result into a variable called cut_graph
      * So this contains all the neighbors of id location
@@ -795,9 +804,6 @@ namespace ccann {
     assert(!src_pool.empty());
 
     for (auto des : src_pool) {
-#ifdef _WIN32
-      if (n >= 35 && n <= 50) std::cerr << "reverse edge " << n << " -> " << des << " start" << std::endl;
-#endif
       /* des.id is the id of the neighbors of n */
       assert(des < _max_points + _num_frozen_pts);
       /* des_pool contains the neighbors of the neighbors of n */
@@ -817,13 +823,11 @@ namespace ccann {
           }
         }
       }  // des lock is released by this point
-#ifdef _WIN32
-      if (n >= 35 && n <= 50) std::cerr << "reverse edge " << n << " -> " << des << " unlocked" << std::endl;
-#endif
 
       if (prune_needed) {
 #ifdef _WIN32
-        std::cerr << "reverse prune " << n << " -> " << des << " begin" << std::endl;
+        std::cerr << "reverse prune " << n << " -> " << des << " begin size="
+                  << copy_of_neighbors.size() << std::endl;
 #endif
         copy_of_neighbors.push_back(n);
         tsl::robin_set<unsigned> dummy_visited(0);
@@ -841,6 +845,9 @@ namespace ccann {
             dummy_visited.insert(cur_nbr);
           }
         }
+#ifdef _WIN32
+        std::cerr << "reverse prune pool ready size=" << dummy_pool.size() << std::endl;
+#endif
         std::vector<unsigned> new_out_neighbors;
         prune_neighbors(des, dummy_pool, parameter, new_out_neighbors);
 #ifdef _WIN32
@@ -881,18 +888,12 @@ namespace ccann {
     ccann::Timer link_timer;
 #pragma omp parallel for schedule(dynamic)
     for (int64_t node = 0; node < n_vecs_to_visit; node++) {
-#ifdef _WIN32
-      std::cerr << "graph node " << node << " search start" << std::endl;
-#endif
       // search.
       std::vector<Neighbor> pool;
       tsl::robin_set<unsigned> visited;
       pool.reserve(2 * L);
       visited.reserve(2 * L);
       get_expanded_nodes(node, L, init_ids, pool, visited);
-#ifdef _WIN32
-      std::cerr << "graph node " << node << " search done" << std::endl;
-#endif
       // remove the node itself from pool.
       for (auto it = pool.begin(); it != pool.end();) {
         if (it->id == node) {
@@ -904,9 +905,6 @@ namespace ccann {
       // prune neighbors.
       std::vector<unsigned> pruned_list;
       prune_neighbors(node, pool, parameters, pruned_list);
-#ifdef _WIN32
-      std::cerr << "graph node " << node << " prune done" << std::endl;
-#endif
 
       {
         // v2::SparseWriteLockGuard<uint64_t> guard(&_locks, node);
@@ -915,9 +913,6 @@ namespace ccann {
       }
 
       inter_insert(node, pruned_list, parameters);
-#ifdef _WIN32
-      std::cerr << "graph node " << node << " insert done" << std::endl;
-#endif
 
       if (node % 100000 == 0) {
         std::cerr << "\r" << (100.0 * node) / (n_vecs_to_visit) << "% of index build completed.";
