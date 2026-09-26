@@ -16,6 +16,7 @@
 #include <ctime>
 #include <omp.h>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 
 #include <fcntl.h>
@@ -181,6 +182,12 @@ namespace ccann {
                                             const std::string disk_prefix_out, Distance<T> *dist,
                                             ccann::Metric dist_metric, int search_mode, bool use_mem_index,
                                             bool read_only, int cpu_bound) {
+    if (search_mode != BEAM_SEARCH && search_mode != PIPE_SEARCH && search_mode != PARA_SEARCH)
+      throw std::invalid_argument("Search mode must be BEAM_SEARCH, PIPE_SEARCH, or PARA_SEARCH");
+#ifdef _WIN32
+    if (search_mode != BEAM_SEARCH)
+      throw std::invalid_argument("Only BEAM_SEARCH is available on Windows");
+#endif
     // check if file exists.
     if (!std::filesystem::exists(disk_prefix_in + "_disk.index")) {
       LOG(ERROR) << "Disk index file does not exist: " << disk_prefix_in << "_disk.index";
@@ -234,17 +241,9 @@ namespace ccann {
       _disk_index_prefix_in = disk_index_prefix_shadow;
     }
 
-    if (search_mode == BEAM_SEARCH || search_mode == PAGE_SEARCH || search_mode == PIPE_SEARCH ||
-        search_mode == PARA_SEARCH) {
-      this->search_mode = search_mode;
-      _disk_index->search_mode = search_mode;
-    } else {
-      LOG(ERROR) << "Invalid search mode: " << search_mode
-                 << ". Must be one of BEAM_SEARCH, PAGE_SEARCH, or PIPE_SEARCH.";
-      exit(-1);
-    }
-    bool use_page_search = (search_mode == PAGE_SEARCH);
-    int res = _disk_index->load(_disk_index_prefix_in.c_str(), _num_threads, true, use_page_search, cpu_bound);
+    this->search_mode = search_mode;
+    _disk_index->search_mode = search_mode;
+    int res = _disk_index->load(_disk_index_prefix_in.c_str(), _num_threads, true, false, cpu_bound);
     if (res != 0) {
       LOG(INFO) << "Failed to load disk index in DynamicSSDIndex constructor";
       exit(-1);
@@ -315,9 +314,6 @@ namespace ccann {
       n = _disk_index->beam_search(query, search_L, mem_L, search_L, result_tags.data(), result_distances.data(),
                                    beam_width, stats, deletion_set, dyn_search_l);
 #ifndef _WIN32
-    } else if (search_mode == PAGE_SEARCH) {
-      n = _disk_index->page_search(query, search_L, mem_L, search_L, result_tags.data(), result_distances.data(),
-                                   beam_width, stats);
     } else if (search_mode == PIPE_SEARCH) {
       n = _disk_index->pipe_search(query, search_L, mem_L, search_L, result_tags.data(), result_distances.data(),
                                    beam_width, stats);

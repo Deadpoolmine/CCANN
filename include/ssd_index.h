@@ -32,7 +32,7 @@
 
 constexpr int kIndexSizeFactor = 2;
 
-enum SearchMode { BEAM_SEARCH = 0, PAGE_SEARCH = 1, PIPE_SEARCH = 2, CORO_SEARCH = 3, PARA_SEARCH = 4 };
+enum SearchMode { BEAM_SEARCH = 0, PIPE_SEARCH = 2, PARA_SEARCH = 4 };
 
 namespace {
   inline void aggregate_coords(const unsigned *ids, const _u64 n_ids, const _u8 *all_coords, const _u64 ndims,
@@ -214,7 +214,6 @@ namespace ccann {
                              SECTOR_LEN);  // 2x for read + write
 
       buf.visited = new tsl::robin_set<_u64>(4096);
-      buf.page_visited = new tsl::robin_set<unsigned>(4096);
 
       memset(buf.sector_scratch, 0, MAX_N_SECTOR_READS * SECTOR_LEN);
       memset(buf.coord_scratch, 0, coord_alloc_size);
@@ -249,7 +248,7 @@ namespace ccann {
     }
 
     // load compressed data, and obtains the handle to the disk-resident index
-    int load(const char *index_prefix, uint32_t num_threads, bool new_index_format = true, bool use_page_search = false,
+    int load(const char *index_prefix, uint32_t num_threads, bool new_index_format = true, bool use_page_locks = false,
              int cpu_bound = -1);
 
     void load_mem_index(Metric metric, const size_t query_dim, const std::string &mem_index_path);
@@ -264,13 +263,6 @@ namespace ccann {
     size_t beam_search(const T *query, const _u64 k_search, const _u32 mem_L, const _u64 l_search, TagT *res_tags,
                        float *res_dists, const _u64 beam_width, QueryStats *stats = nullptr,
                        std::unordered_set<uint32_t> *deleted_nodes = nullptr, bool dyn_search_l = true);
-
-    size_t coro_search(T **queries, const _u64 k_search, const _u32 mem_L, const _u64 l_search, TagT **res_tags,
-                       float **res_dists, const _u64 beam_width, int N);
-
-    // read-only search algorithms.
-    size_t page_search(const T *query, const _u64 k_search, const _u32 mem_L, const _u64 l_search, TagT *res_tags,
-                       float *res_dists, const _u64 beam_width, QueryStats *stats = nullptr);
 
     size_t pipe_search(const T *query, const _u64 k_search, const _u32 mem_L, const _u64 l_search, TagT *res_tags,
                        float *res_dists, const _u64 beam_width, QueryStats *stats = nullptr,
@@ -495,7 +487,7 @@ namespace ccann {
     }
 
    public:
-    // lock the mapping for target/page if use_page_search == false/true.
+    // Lock page mappings when page-level locking is enabled.
     std::vector<uint32_t> lock_idx(v2::SparseLockTable<uint64_t> &lock_table, uint32_t target,
                                    const std::vector<uint32_t> &neighbors, bool rd = false) {
       std::vector<uint32_t> to_lock = get_to_lock_idx(target, neighbors);
@@ -518,7 +510,7 @@ namespace ccann {
     // two-level, as id2page may change before and after grabbing the lock.
     std::vector<uint32_t> lock_page_idx(v2::SparseLockTable<uint64_t> &lock_table, uint32_t target,
                                         const std::vector<uint32_t> &neighbors, bool rd = false) {
-      if (!use_page_search_) {
+      if (!use_page_locks_) {
         return std::vector<uint32_t>();
       }
       std::vector<uint32_t> to_lock(neighbors.begin(), neighbors.end());
@@ -542,7 +534,7 @@ namespace ccann {
     }
 
     void unlock_page_idx(v2::SparseLockTable<uint64_t> &lock_table, const std::vector<uint32_t> &to_lock) {
-      if (!use_page_search_) {
+      if (!use_page_locks_) {
         return;
       }
       for (auto &id : to_lock) {
@@ -561,8 +553,7 @@ namespace ccann {
     std::mutex insert_mutex_;
     std::atomic<uint32_t> calc_thread_count_{0};
 
-    // page search
-    bool use_page_search_ = true;
+    bool use_page_locks_ = true;
 
     libcuckoo::cuckoohash_map<uint32_t, uint32_t> id2loc_;  // id -> loc (start from 0)
     uint32_t id2loc(uint32_t id) {

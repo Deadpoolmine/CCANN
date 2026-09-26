@@ -78,7 +78,6 @@ namespace ccann {
     std::string _disk_index_prefix_in;
     std::string _disk_index_prefix_out;
 
-    bool _use_page_search = false;
     bool _use_mem_index = false;
     double _mem_index_ratio = 1.0;  // mem index size / disk index size
     int search_mode = BEAM_SEARCH;

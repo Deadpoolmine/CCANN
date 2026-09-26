@@ -9,7 +9,6 @@ if(WIN32)
   )
   list(APPEND PROJECT_CPP
     search/beam_search.cpp
-    search/page_search.cpp
     utils/windows_aligned_file_io.cpp
     utils/windows_cblas.cpp
   )

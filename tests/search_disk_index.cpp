@@ -51,7 +51,10 @@ int search_disk_index(int argc, char **argv) {
   _u64 recall_at = std::atoi(argv[index++]);
   std::string dist_metric(argv[index++]);
   int search_mode = std::atoi(argv[index++]);
-  bool use_page_search = search_mode != 0;
+  if (search_mode != BEAM_SEARCH && search_mode != PIPE_SEARCH && search_mode != PARA_SEARCH) {
+    std::cerr << "Search mode must be 0 (beam), 2 (pipe), or 4 (para)" << std::endl;
+    return -1;
+  }
   _u32 mem_L = std::atoi(argv[index++]);
 
   ccann::Metric m = dist_metric == "cosine" ? ccann::Metric::COSINE : ccann::Metric::L2;
@@ -102,9 +105,9 @@ int search_disk_index(int argc, char **argv) {
   id2loc_writer.reset(new LinuxAlignedFileIO());
 
   std::unique_ptr<ccann::SSDIndex<T>> _pFlashIndex(new ccann::SSDIndex<T>(
-      m, reader, pq_compressed_writer, tags_writer, id2loc_writer, SearchMode(search_mode), tags_flag));
+      m, reader, pq_compressed_writer, tags_writer, id2loc_writer, false, tags_flag));
 
-  int res = _pFlashIndex->load(index_prefix_path.c_str(), num_threads, true, use_page_search);
+  int res = _pFlashIndex->load(index_prefix_path.c_str(), num_threads, true, false);
   if (res != 0) {
     return res;
   }
@@ -141,31 +144,13 @@ int search_disk_index(int argc, char **argv) {
                                   query_result_dists[test_id].data() + (i * recall_at), (uint64_t) beamwidth,
                                   stats + i);
       }
-    } else if (search_mode == SearchMode::PAGE_SEARCH) {
+    } else if (search_mode == SearchMode::PARA_SEARCH) {
 #pragma omp parallel for schedule(dynamic, 1)
       for (_s64 i = 0; i < (int64_t) query_num; i++) {
-        _pFlashIndex->page_search(query + (i * query_dim), (uint64_t) recall_at, mem_L, (uint64_t) L,
+        _pFlashIndex->para_search(query + (i * query_dim), (uint64_t) recall_at, mem_L, (uint64_t) L,
                                   query_result_tags_32.data() + (i * recall_at),
                                   query_result_dists[test_id].data() + (i * recall_at), (uint64_t) beamwidth,
                                   stats + i);
-      }
-    } else if (search_mode == SearchMode::CORO_SEARCH) {
-      constexpr uint64_t kBatchSize = 8;
-      T *q[kBatchSize];
-      uint32_t *res_tags[kBatchSize];
-      float *res_dists[kBatchSize];
-      int N;
-#pragma omp parallel for schedule(dynamic, 1) private(q, res_tags, res_dists, N)
-      for (_s64 i = 0; i < (int64_t) query_num; i += kBatchSize) {
-        N = std::min(kBatchSize, query_num - i);
-        for (int v = 0; v < N; ++v) {
-          q[v] = query + ((i + v) * query_dim);
-          res_tags[v] = query_result_tags_32.data() + ((i + v) * recall_at);
-          res_dists[v] = query_result_dists[test_id].data() + ((i + v) * recall_at);
-        }
-
-        _pFlashIndex->coro_search(q, (uint64_t) recall_at, mem_L, (uint64_t) L, res_tags, res_dists,
-                                  (uint64_t) beamwidth, N);
       }
     } else if (search_mode == SearchMode::BEAM_SEARCH) {
 #pragma omp parallel for schedule(dynamic, 1)
@@ -257,18 +242,18 @@ int main(int argc, char **argv) {
                  " <num_threads>  <pipeline width> "
                  " <query_file.bin>  <truthset.bin (use \"null\" for none)> "
                  " <K> <similarity (cosine/l2)> "
-                 " <search_mode(0 for beam search / 1 for page search / 2 for pipe search)> <mem_L (0 means not "
+                 " <search_mode(0 beam / 2 pipe / 4 para)> <mem_L (0 means not "
                  "using mem index)> <L1> [L2] etc."
               << std::endl;
     exit(-1);
   }
 
   if (std::string(argv[1]) == std::string("float"))
-    search_disk_index<float>(argc, argv);
+    return search_disk_index<float>(argc, argv);
   else if (std::string(argv[1]) == std::string("int8"))
-    search_disk_index<int8_t>(argc, argv);
+    return search_disk_index<int8_t>(argc, argv);
   else if (std::string(argv[1]) == std::string("uint8"))
-    search_disk_index<uint8_t>(argc, argv);
-  else
-    std::cout << "Unsupported index type. Use float or int8 or uint8" << std::endl;
+    return search_disk_index<uint8_t>(argc, argv);
+  std::cout << "Unsupported index type. Use float or int8 or uint8" << std::endl;
+  return -1;
 }

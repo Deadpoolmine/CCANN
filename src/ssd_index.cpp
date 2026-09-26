@@ -285,7 +285,80 @@ namespace ccann {
   }
 
   template<typename T, typename TagT>
-  int SSDIndex<T, TagT>::load(const char *index_prefix, _u32 num_threads, bool new_index_format, bool use_page_search, int cpu_bound) {
+  void SSDIndex<T, TagT>::load_page_layout(const std::string &index_prefix, const _u64 nnodes_per_sector,
+                                           const _u64 num_points) {
+    std::string partition_file = index_prefix + "_partition.bin.aligned";
+    if (std::filesystem::exists(partition_file)) {
+      LOG(INFO) << "Loading partition file " << partition_file;
+      std::ifstream part(partition_file, std::ios::binary);
+      _u64 C, partition_nums, nd;
+      part.read((char *) &C, sizeof(_u64));
+      part.read((char *) &partition_nums, sizeof(_u64));
+      part.read((char *) &nd, sizeof(_u64));
+      if (nnodes_per_sector && num_points && (C != nnodes_per_sector)) {
+        LOG(ERROR) << "partition information not correct.";
+        exit(-1);
+      }
+      LOG(INFO) << "Partition meta: C: " << C << " partition_nums: " << partition_nums;
+
+      uint64_t page_offset = loc_sector_no(0);
+      auto st = std::chrono::high_resolution_clock::now();
+
+      constexpr uint64_t n_parts_per_read = 1024 * 1024;
+      std::vector<unsigned> part_buf(n_parts_per_read * (1 + nnodes_per_sector));
+      for (uint64_t p = 0; p < partition_nums; p += n_parts_per_read) {
+        uint64_t nxt_p = std::min(p + n_parts_per_read, partition_nums);
+        part.read((char *) part_buf.data(), sizeof(unsigned) * n_parts_per_read * (1 + nnodes_per_sector));
+#pragma omp parallel for schedule(dynamic)
+        for (int64_t i = static_cast<int64_t>(p); i < static_cast<int64_t>(nxt_p); ++i) {
+          uint32_t s = part_buf[(i - p) * (1 + nnodes_per_sector)];
+          PageArr tmp_arr;
+          memcpy(tmp_arr.data(), part_buf.data() + (i - p) * (1 + nnodes_per_sector) + 1,
+                 sizeof(unsigned) * nnodes_per_sector);
+          for (uint32_t j = 0; j < s; ++j) {
+            uint64_t loc = i * nnodes_per_sector + j;
+            id2loc_.insert_or_assign(tmp_arr[j], loc);
+          }
+          this->page_layout.insert(page_offset + i, tmp_arr);
+        }
+      }
+      this->cur_loc = partition_nums * nnodes_per_sector;
+
+      auto et = std::chrono::high_resolution_clock::now();
+      LOG(INFO) << "Page layout loaded in " << std::chrono::duration_cast<std::chrono::milliseconds>(et - st).count()
+                << " ms";
+    } else {
+      LOG(INFO) << partition_file << " does not exist, use equal partition mapping";
+#pragma omp parallel for
+      for (int64_t i = 0; i < static_cast<int64_t>(this->num_points); ++i) {
+        id2loc_.insert_or_assign(i, i);
+      }
+
+      uint64_t page_offset = loc_sector_no(0);
+      uint64_t num_sectors = (num_points + nnodes_per_sector - 1) / nnodes_per_sector;
+#pragma omp parallel for
+      for (int64_t i = 0; i < static_cast<int64_t>(num_sectors); ++i) {
+        PageArr tmp_arr;
+        for (uint32_t j = 0; j < nnodes_per_sector; ++j) {
+          uint64_t id = i * nnodes_per_sector + j;
+          tmp_arr[j] = id < num_points ? id : kInvalidID;
+        }
+        for (uint32_t j = nnodes_per_sector; j < tmp_arr.size(); ++j) {
+          tmp_arr[j] = kInvalidID;
+        }
+        this->page_layout.insert(i + page_offset, tmp_arr);
+      }
+      this->cur_loc = num_points;
+      if (num_points % nnodes_per_sector != 0) {
+        cur_loc += nnodes_per_sector - (num_points % nnodes_per_sector);
+      }
+    }
+    LOG(INFO) << "Cur location: " << this->cur_loc;
+    LOG(INFO) << "Page layout loaded.";
+  }
+
+  template<typename T, typename TagT>
+  int SSDIndex<T, TagT>::load(const char *index_prefix, _u32 num_threads, bool new_index_format, bool use_page_locks, int cpu_bound) {
     std::string pq_table_bin, pq_compressed_vectors, disk_index_file, centroids_file, disk_journal_file;
     ccann::Timer load_timer;
     std::string iprefix = std::string(index_prefix);
@@ -485,7 +558,7 @@ namespace ccann {
     // # We only load [0, num_points) from Tags File/PQ Compressed file.
 
     // load page layout and set cur_loc
-    this->use_page_search_ = use_page_search;
+    this->use_page_locks_ = use_page_locks;
     this->load_page_layout(index_prefix, nnodes_per_sector, num_points);
 
     if (this->on_pm && std::filesystem::exists(id2loc_file)) {

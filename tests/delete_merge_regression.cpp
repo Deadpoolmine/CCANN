@@ -155,6 +155,26 @@ int main() {
       }
     }
 
+    for (int mode : {PIPE_SEARCH, PARA_SEARCH}) {
+      ccann::Parameters search_params;
+      set_parameters(search_params);
+      ccann::DynamicSSDIndex<float, uint32_t> retained(search_params, prefix, merged + "_search", &distance,
+                                                        ccann::Metric::L2, mode, false, true, 2);
+      require(check_search(retained, vectors, expected) >= 8, "retained search mode lost recall");
+    }
+    for (int removed_mode : {1, 3}) {
+      ccann::Parameters invalid_params;
+      set_parameters(invalid_params);
+      bool rejected = false;
+      try {
+        ccann::DynamicSSDIndex<float, uint32_t> removed(invalid_params, prefix, merged + "_removed", &distance,
+                                                         ccann::Metric::L2, removed_mode, false, true, 2);
+      } catch (const std::invalid_argument &) {
+        rejected = true;
+      }
+      require(rejected, "removed search mode must be rejected");
+    }
+
     {
       ccann::Parameters delete_params;
       set_parameters(delete_params);

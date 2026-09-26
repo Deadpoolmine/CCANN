@@ -1094,6 +1094,8 @@ namespace ccann {
                                         std::unordered_set<uint32_t> *deleted_nodes, bool dyn_search_l) {
     std::shared_lock lk(merge_lock);
     std::vector<Neighbor> expanded_nodes_info;
+    QueryStats local_stats;
+    if (stats == nullptr) stats = &local_stats;
     this->do_para_search(query1, mem_L, l_search, beam_width, expanded_nodes_info, nullptr, stats, deleted_nodes,
                          dyn_search_l, nullptr, k_search);
     // copy k_search values

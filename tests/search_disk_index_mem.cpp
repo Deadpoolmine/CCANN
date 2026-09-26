@@ -58,8 +58,6 @@ int search_disk_index(int argc, char **argv) {
   _u64 recall_at = std::atoi(argv[index++]);
   std::string result_output_prefix(argv[index++]);
   std::string dist_metric(argv[index++]);
-  int search_mode = std::atoi(argv[index++]);
-  bool use_page_search = search_mode != 0;
   std::ignore = std::atoi(argv[index++]);
 
   ccann::Metric m = dist_metric == "cosine" ? ccann::Metric::COSINE : ccann::Metric::L2;
@@ -108,7 +106,6 @@ int search_disk_index(int argc, char **argv) {
   LOG(INFO) << "Num threads: " << num_threads;
   omp_set_num_threads(num_threads);
 
-  LOG(INFO) << "Use page search: " << use_page_search;
 
   std::cout.setf(std::ios_base::fixed, std::ios_base::floatfield);
   std::cout.precision(2);
@@ -235,7 +232,7 @@ int main(int argc, char **argv) {
                  "optimize internally)> "
                  " <query_file.bin>  <truthset.bin (use \"null\" for none)> "
                  " <K>  <result_output_prefix> <similarity (cosine/l2)> "
-                 " <use_page_search(0/1/2)> <mem_L> <L1> [L2] etc.  See README for "
+                 " <mem_L> <L1> [L2] etc.  See README for "
                  "more information on parameters."
               << std::endl;
     exit(-1);

@@ -491,6 +491,8 @@ namespace ccann {
                                         std::unordered_set<uint32_t> *deleted_nodes, bool dyn_search_l) {
     std::shared_lock lk(merge_lock);
     std::vector<Neighbor> expanded_nodes_info;
+    QueryStats local_stats;
+    if (stats == nullptr) stats = &local_stats;
     ANN_INIT_TIMING(search_t);
     ANN_START_TIMING(search_graph_time, search_t);
     this->do_pipe_search(query1, mem_L, l_search, beam_width, expanded_nodes_info, nullptr, stats, deleted_nodes,

@@ -77,7 +77,6 @@ namespace ccann {
     char *update_buf = nullptr;
 
     tsl::robin_set<_u64> *visited = nullptr;
-    tsl::robin_set<unsigned> *page_visited = nullptr;
     IORequest reqs[MAX_N_SECTOR_READS];
     IORequest comp_reqs[MAX_N_COMPUTES];
 
@@ -86,7 +85,6 @@ namespace ccann {
       sector_idx = 0;
       comp_idx = 0;
       visited->clear();  // does not deallocate memory.
-      page_visited->clear();
     }
   };
 };  // namespace ccann
