@@ -90,8 +90,13 @@ class PySSDIndex {
     ccann::save_bin<float>(data_path, vectors.mutable_data(), vectors.shape(0), vectors.shape(1));
     ccann::save_bin<uint32_t>(tags_path, tags.mutable_data(), tags.shape(0), 1);
     auto chunks = std::min<int>(32, vectors.shape(1));
-    if (!ccann::build_disk_index_py<float, uint32_t>(data_path.c_str(), prefix.c_str(), 32, 64, 1,
-                                                     threads, chunks, metric, false, tags_path.c_str()))
+    bool built;
+    {
+      py::gil_scoped_release release;
+      built = ccann::build_disk_index_py<float, uint32_t>(data_path.c_str(), prefix.c_str(), 32, 64, 1,
+                                                          threads, chunks, metric, false, tags_path.c_str());
+    }
+    if (!built)
       throw std::runtime_error("SSD index build failed");
     for (const char *suffix : {"_disk.index", "_disk.index.tags", "_pq_compressed.bin", "_pq_pivots.bin"})
       sync_file(prefix + suffix);
