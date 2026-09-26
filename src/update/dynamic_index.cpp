@@ -17,7 +17,6 @@
 #include <omp.h>
 #include <shared_mutex>
 #include <string>
-#include <sys/mman.h>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -311,6 +310,7 @@ namespace ccann {
     if (search_mode == BEAM_SEARCH) {
       n = _disk_index->beam_search(query, search_L, mem_L, search_L, result_tags.data(), result_distances.data(),
                                    beam_width, stats, deletion_set, dyn_search_l);
+#ifndef _WIN32
     } else if (search_mode == PAGE_SEARCH) {
       n = _disk_index->page_search(query, search_L, mem_L, search_L, result_tags.data(), result_distances.data(),
                                    beam_width, stats);
@@ -320,6 +320,7 @@ namespace ccann {
     } else if (search_mode == PARA_SEARCH) {
       n = _disk_index->para_search(query, search_L, mem_L, search_L, result_tags.data(), result_distances.data(),
                                    beam_width, stats);
+#endif
     } else {
       LOG(ERROR) << "Invalid search mode: " << search_mode;
       exit(-1);

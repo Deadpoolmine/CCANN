@@ -130,7 +130,11 @@ namespace ccann {
   inline void alloc_aligned(void **ptr, size_t size, size_t align) {
     *ptr = nullptr;
     assert(IS_ALIGNED(size, align));
+#ifdef _WIN32
+    *ptr = _aligned_malloc(size, align);
+#else
     *ptr = ::aligned_alloc(align, size);
+#endif
     assert(*ptr != nullptr);
   }
 
@@ -144,7 +148,11 @@ namespace ccann {
     if (ptr == nullptr) {
       return;
     }
+#ifdef _WIN32
+    _aligned_free(ptr);
+#else
     free(ptr);
+#endif
   }
 
   inline void GenRandom(std::mt19937 &rng, unsigned *addr, unsigned size, unsigned N) {

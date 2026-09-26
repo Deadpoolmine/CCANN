@@ -17,7 +17,6 @@
 #include <limits>
 #include <omp.h>
 #include <tuple>
-#include <boost/crc.hpp>
 
 #include "linux_aligned_file_io.h"
 #include <sys/syscall.h>
@@ -74,10 +73,12 @@ namespace ccann {
 
     if (this->search_mode == BEAM_SEARCH) {
       search_func = &SSDIndex<T, TagT>::do_beam_search;
+#ifndef _WIN32
     } else if (this->search_mode == PIPE_SEARCH) {
       search_func = &SSDIndex<T, TagT>::do_pipe_search;
     } else if (this->search_mode == PARA_SEARCH) {
       search_func = &SSDIndex<T, TagT>::do_para_search;
+#endif
     } else {
       LOG(ERROR) << "Invalid search mode: " << this->search_mode;
       crash();

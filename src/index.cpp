@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <boost/dynamic_bitset.hpp>
 #include <cassert>
 #include <chrono>
 #include <cmath>

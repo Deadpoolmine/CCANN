@@ -6,7 +6,7 @@ CCANN is a crash-consistent graph-based approximate nearest neighbor search (ANN
 
 On Linux, install the native build prerequisites (CMake, a C++17 compiler, OpenMP, BLAS, TBB, liburing, and userspace RCU), then run `pip install .`. The extension does not link PMDK and does not require PM/DAX hardware.
 
-On Windows, `pip install .` builds a Windows-specific wheel without the Linux-only native extension. The same `Index` API uses an SSD-backed, fsynced append log with exact L2 search for both empty and nonempty indexes. This backend stores all live vectors in memory while searching, so it is intended for smaller datasets and does not offer the native Linux graph index's performance or file-format compatibility. Run the Linux build under WSL for the graph index.
+On Windows, `pip install .` builds the native graph extension. Nonempty indexes use the same SSD graph and PQ file format as Linux. Empty indexes initially use an append log with exact L2 search; they stay in that format as points are added. Windows file flushes and write-through generation replacement provide the persistence barriers used by the native Python index.
 
 ```python
 import numpy as np

@@ -2,24 +2,14 @@
 
 import os
 import struct
-import sys
 import tempfile
 import threading
 import zlib
 
 import numpy as np
 
-if sys.platform == "win32":
-    from enum import IntEnum
-
-    class Metric(IntEnum):
-        L2 = 0
-        COSINE = 4
-
-    _NativeIndex = None
-else:
-    from ._native import Index as _NativeIndex
-    from ._native import Metric
+from ._native import Index as _NativeIndex
+from ._native import Metric
 
 
 _MAGIC = b"CCANNF01"
@@ -272,16 +262,6 @@ class Index:
             return cls(_FlatIndex.create(prefix, vectors.shape[1]), threads)
         if os.path.exists(prefix + "_ccann.flat") or os.path.exists(prefix + "_ccann.active"):
             raise ValueError("Index already exists at prefix")
-        if _NativeIndex is None:
-            if (not isinstance(vectors, np.ndarray) or vectors.dtype != np.float32 or
-                    vectors.ndim != 2 or not vectors.flags.c_contiguous or
-                    vectors.shape[0] < 256 or vectors.shape[1] == 0 or
-                    not isinstance(tags, np.ndarray) or tags.dtype != np.uint32 or
-                    tags.shape != (vectors.shape[0],) or not tags.flags.c_contiguous):
-                raise ValueError("Expected at least 256 float32 vectors and matching uint32 tags")
-            if len(set(tags.tolist())) != len(tags):
-                raise ValueError("Tags must be unique")
-            return cls(_FlatIndex.create(prefix, vectors.shape[1], vectors, tags), threads)
         return cls(_NativeIndex.create(prefix, vectors, tags, metric, threads), threads)
 
     @classmethod
@@ -290,8 +270,6 @@ class Index:
             if not threads or metric != Metric.L2:
                 raise ValueError("Only L2 and positive threads are supported")
             return cls(_FlatIndex.load(prefix), threads)
-        if _NativeIndex is None:
-            raise ValueError("Index format requires the Linux native extension")
         return cls(_NativeIndex.load(prefix, metric, threads), threads)
 
     def __getattr__(self, name):

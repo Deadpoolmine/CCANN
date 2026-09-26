@@ -22,6 +22,7 @@ jobs:
       - shell: pwsh
         run: |
           Push-Location $env:RUNNER_TEMP
-          python -c "import ccannpy; assert ccannpy._NativeIndex is None; print(ccannpy.__file__)"
+          python -c "import ccannpy, ccannpy._native; assert ccannpy._NativeIndex is ccannpy._native.Index; print(ccannpy._native.__file__)"
+          python -m pytest -q "$env:GITHUB_WORKSPACE/tests/test_python_portable.py"
+          python -m pytest -q "$env:GITHUB_WORKSPACE/tests/test_python_ssd.py::test_ssd_python_round_trip"
           Pop-Location
-      - run: python -m pytest -q tests/test_python_portable.py

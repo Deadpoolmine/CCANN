@@ -1,5 +1,4 @@
 import os
-import signal
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -169,7 +168,7 @@ def test_recover_after_process_kill(tmp_path, empty):
     del index
 
     script = """
-import os, signal, sys
+import os, sys
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import ccannpy
@@ -178,10 +177,10 @@ index.add(np.full(64, 7, dtype=np.float32), 9001)
 vectors = np.eye(8, 64, dtype=np.float32) * 20
 with ThreadPoolExecutor(max_workers=4) as pool:
     list(pool.map(lambda item: index.add(*item), zip(vectors, range(9010, 9018))))
-os.kill(os.getpid(), signal.SIGKILL)
+os._exit(17)
 """
     result = subprocess.run([sys.executable, "-c", script, prefix], check=False, timeout=20)
-    assert result.returncode == -signal.SIGKILL
+    assert result.returncode == 17
     restored = ccannpy.Index.load(prefix, threads=2)
     assert restored.npoints == len(vectors) + 9
     inserted = [(9001, np.full(64, 7, dtype=np.float32))]
@@ -260,14 +259,14 @@ def test_graph_remove_survives_process_kill(ssd_index, tmp_path):
     del index
 
     script = """
-import os, signal, sys
+import os, sys
 import ccannpy
 index = ccannpy.Index.load(sys.argv[1], threads=2)
 index.remove(1000)
-os.kill(os.getpid(), signal.SIGKILL)
+os._exit(17)
 """
     result = subprocess.run([sys.executable, "-c", script, prefix], check=False, timeout=20)
-    assert result.returncode == -signal.SIGKILL
+    assert result.returncode == 17
     restored = ccannpy.Index.load(prefix, threads=2)
     assert restored.npoints == 299
     restored.remove(1001)
@@ -309,7 +308,7 @@ def test_graph_auto_merge_at_10000_deletes(tmp_path):
     assert hasattr(index, "merge")
     del index
     script = """
-import os, signal, sys
+import os, sys
 import ccannpy
 index = ccannpy.Index.load(sys.argv[1], threads=2)
 for tag in range(9999):
@@ -318,10 +317,10 @@ assert index.npoints == 2
 assert not os.path.exists(sys.argv[1] + "_ccann.active")
 index.remove(9999)
 assert index.npoints == 1
-os.kill(os.getpid(), signal.SIGKILL)
+os._exit(17)
 """
     result = subprocess.run([sys.executable, "-c", script, prefix], check=False, timeout=90)
-    assert result.returncode == -signal.SIGKILL
+    assert result.returncode == 17
     assert (tmp_path / "index_ccann.active").read_text() == "1\n"
     assert not (tmp_path / "index_disk.index").exists()
     assert not (tmp_path / "index_ccann.removed").exists()

@@ -1,7 +1,9 @@
 #ifndef DUMMY_KVS_H_
 #define DUMMY_KVS_H_
 
-#include <pthread.h>
+#include <atomic>
+#include <memory>
+#include <mutex>
 // #include <rocksdb/utilities/optimistic_transaction_db.h>
 // #include <rocksdb/utilities/transaction.h>
 #include <string>
