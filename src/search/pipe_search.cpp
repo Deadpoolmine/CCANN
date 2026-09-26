@@ -44,7 +44,7 @@ namespace ccann {
   void SSDIndex<T, TagT>::do_pipe_search(const T *query1, uint32_t mem_L, uint32_t l_search, const uint32_t beam_width,
                                          std::vector<Neighbor> &expanded_nodes_info,
                                          tsl::robin_map<uint32_t, T *> *coord_map, QueryStats *stats,
-                                         tsl::robin_set<uint32_t> *exclude_nodes /* tags */, bool dyn_search_l,
+                                         std::unordered_set<uint32_t> *exclude_nodes /* tags */, bool dyn_search_l,
                                          std::vector<uint64_t> *passthrough_page_ref, uint32_t k_search) {
     uint32_t original_l_search = l_search;
     QueryBuffer<T> *query_buf = pop_query_buf(query1);
@@ -488,7 +488,7 @@ namespace ccann {
   template<typename T, typename TagT>
   size_t SSDIndex<T, TagT>::pipe_search(const T *query1, const _u64 k_search, const _u32 mem_L, const _u64 l_search,
                                         TagT *res_tags, float *distances, const _u64 beam_width, QueryStats *stats,
-                                        tsl::robin_set<uint32_t> *deleted_nodes, bool dyn_search_l) {
+                                        std::unordered_set<uint32_t> *deleted_nodes, bool dyn_search_l) {
     std::shared_lock lk(merge_lock);
     std::vector<Neighbor> expanded_nodes_info;
     ANN_INIT_TIMING(search_t);

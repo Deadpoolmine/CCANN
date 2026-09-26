@@ -35,7 +35,7 @@ namespace ccann {
       if (tables != nullptr)
         delete[] tables;
       if (tables_T != nullptr)
-        delete[] tables_T;
+        ccann::aligned_free(tables_T);
       if (rearrangement != nullptr)
         delete[] rearrangement;
       if (chunk_offsets != nullptr)

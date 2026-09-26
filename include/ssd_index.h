@@ -5,6 +5,7 @@
 #include <future>
 #include <string>
 #include <set>
+#include <unordered_set>
 #include "v2/journal.h"
 #include "v2/page_cache.h"
 #include <iostream>
@@ -200,7 +201,7 @@ namespace ccann {
     }
 
     void init_query_buf(QueryBuffer<T> &buf) {
-      _u64 coord_alloc_size = ROUND_UP(MAX_N_CMPS * this->aligned_dim, 256);
+      _u64 coord_alloc_size = ROUND_UP(MAX_N_CMPS * this->aligned_dim * sizeof(T), 256);
       ccann::alloc_aligned((void **) &buf.coord_scratch, coord_alloc_size, 256);
       ccann::alloc_aligned((void **) &buf.sector_scratch, MAX_N_SECTOR_READS * SECTOR_LEN, SECTOR_LEN);
       // [MAX_N_COMPUTES * N_CHUNKS * MAX_DEGREE]
@@ -262,7 +263,7 @@ namespace ccann {
     // search supporting update.
     size_t beam_search(const T *query, const _u64 k_search, const _u32 mem_L, const _u64 l_search, TagT *res_tags,
                        float *res_dists, const _u64 beam_width, QueryStats *stats = nullptr,
-                       tsl::robin_set<uint32_t> *deleted_nodes = nullptr, bool dyn_search_l = true);
+                       std::unordered_set<uint32_t> *deleted_nodes = nullptr, bool dyn_search_l = true);
 
     size_t coro_search(T **queries, const _u64 k_search, const _u32 mem_L, const _u64 l_search, TagT **res_tags,
                        float **res_dists, const _u64 beam_width, int N);
@@ -273,11 +274,11 @@ namespace ccann {
 
     size_t pipe_search(const T *query, const _u64 k_search, const _u32 mem_L, const _u64 l_search, TagT *res_tags,
                        float *res_dists, const _u64 beam_width, QueryStats *stats = nullptr,
-                       tsl::robin_set<uint32_t> *deleted_nodes = nullptr, bool dyn_search_l = true);
+                       std::unordered_set<uint32_t> *deleted_nodes = nullptr, bool dyn_search_l = true);
 
     size_t para_search(const T *query, const _u64 k_search, const _u32 mem_L, const _u64 l_search, TagT *res_tags,
                        float *res_dists, const _u64 beam_width, QueryStats *stats = nullptr,
-                       tsl::robin_set<uint32_t> *deleted_nodes = nullptr, bool dyn_search_l = true);
+                       std::unordered_set<uint32_t> *deleted_nodes = nullptr, bool dyn_search_l = true);
 
     std::vector<uint32_t> get_init_ids() {
       return std::vector<uint32_t>(this->medoids, this->medoids + this->num_medoids);
@@ -345,32 +346,32 @@ namespace ccann {
 
    public:
     // in-place update.
-    int insert_in_place(const T *point, const TagT &tag, tsl::robin_set<uint32_t> *deletion_set = nullptr);
-    int insert_in_place_pm(const T *point, const TagT &tag, tsl::robin_set<uint32_t> *deletion_set = nullptr);
-    int async_insert_in_place(const T *point, const TagT &tag, tsl::robin_set<uint32_t> *deletion_set = nullptr);
+    int insert_in_place(const T *point, const TagT &tag, std::unordered_set<uint32_t> *deletion_set = nullptr);
+    int insert_in_place_pm(const T *point, const TagT &tag, std::unordered_set<uint32_t> *deletion_set = nullptr);
+    int async_insert_in_place(const T *point, const TagT &tag, std::unordered_set<uint32_t> *deletion_set = nullptr);
     void synchronize_insertions();
 
     void disk_iterate_to_fixed_point_dyn(const T *vec, const uint32_t Lsize, const uint32_t beam_width,
                                          std::vector<Neighbor> &expanded_nodes_info,
                                          tsl::robin_map<uint32_t, T *> *coord_map, QueryStats *stats,
-                                         QueryBuffer<T> *passthrough_data, tsl::robin_set<uint32_t> *exclude_nodes,
+                                         QueryBuffer<T> *passthrough_data, std::unordered_set<uint32_t> *exclude_nodes,
                                          std::vector<uint64_t> *page_ref);
     void do_beam_search(const T *vec, uint32_t mem_L, uint32_t Lsize, const uint32_t beam_width,
                         std::vector<Neighbor> &expanded_nodes_info, tsl::robin_map<uint32_t, T *> *coord_map = nullptr,
-                        QueryStats *stats = nullptr, tsl::robin_set<uint32_t> *exclude_nodes = nullptr,
+                        QueryStats *stats = nullptr, std::unordered_set<uint32_t> *exclude_nodes = nullptr,
                         bool dyn_search_l = true, std::vector<uint64_t> *passthrough_page_ref = nullptr,
                         uint32_t k_search = 0);
     void do_pipe_search(const T *query1, uint32_t mem_L, uint32_t l_search, const uint32_t beam_width,
                         std::vector<Neighbor> &expanded_nodes_info, tsl::robin_map<uint32_t, T *> *coord_map,
-                        QueryStats *stats, tsl::robin_set<uint32_t> *exclude_nodes /* tags */, bool dyn_search_l,
+                        QueryStats *stats, std::unordered_set<uint32_t> *exclude_nodes /* tags */, bool dyn_search_l,
                         std::vector<uint64_t> *passthrough_page_ref = nullptr, uint32_t k_search = 0);
     void do_para_search(const T *query1, uint32_t mem_L, uint32_t l_search, const uint32_t beam_width,
                         std::vector<Neighbor> &expanded_nodes_info, tsl::robin_map<uint32_t, T *> *coord_map,
-                        QueryStats *stats, tsl::robin_set<uint32_t> *exclude_nodes /* tags */, bool dyn_search_l,
+                        QueryStats *stats, std::unordered_set<uint32_t> *exclude_nodes /* tags */, bool dyn_search_l,
                         std::vector<uint64_t> *passthrough_page_ref = nullptr, uint32_t k_search = 0);
     void do_para_search_sync(const T *query1, uint32_t mem_L, uint32_t l_search, const uint32_t beam_width,
                              std::vector<Neighbor> &expanded_nodes_info, tsl::robin_map<uint32_t, T *> *coord_map,
-                             QueryStats *stats, tsl::robin_set<uint32_t> *exclude_nodes /* tags */, bool dyn_search_l,
+                             QueryStats *stats, std::unordered_set<uint32_t> *exclude_nodes /* tags */, bool dyn_search_l,
                              std::vector<uint64_t> *passthrough_page_ref = nullptr, uint32_t k_search = 0);
     void occlude_list(std::vector<Neighbor> &pool, const tsl::robin_map<uint32_t, T *> &coord_map,
                       std::vector<Neighbor> &result, std::vector<float> &occlude_factor);
@@ -900,7 +901,7 @@ namespace ccann {
 
     // merge deletes (NOTE: index read-only during merge.)
     void merge_deletes(const std::string &in_path_prefix, const std::string &out_path_prefix,
-                       const std::vector<TagT> &deleted_nodes, const tsl::robin_set<TagT> &deleted_nodes_set,
+                       const std::vector<TagT> &deleted_nodes, const std::unordered_set<TagT> &deleted_nodes_set,
                        uint32_t nthreads, const uint32_t &n_sampled_nbrs);
     void merge(const std::string &in_path_prefix, const std::string &out_path_prefix);
 
@@ -910,7 +911,7 @@ namespace ccann {
     void write_metadata_and_pq_incremental(const std::string &in_path_prefix, const std::string &out_path_prefix,
                                            unsigned long last_id, unsigned num_new_points);
 
-    uint32_t search_phase(const T *point, tsl::robin_set<uint32_t> *deletion_set, std::vector<Neighbor> &exp_node_info,
+    uint32_t search_phase(const T *point, std::unordered_set<uint32_t> *deletion_set, std::vector<Neighbor> &exp_node_info,
                           tsl::robin_map<uint32_t, T *> &coord_map, std::vector<uint32_t> &new_nhood,
                           std::vector<uint64_t> &page_ref, std::vector<uint8_t> &out_pq_coords);
     uint32_t insert_phase_pm(const T *point, const TagT &tag, uint32_t target_id, std::vector<Neighbor> &exp_node_info,

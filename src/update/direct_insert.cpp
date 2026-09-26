@@ -17,7 +17,6 @@
 #include <limits>
 #include <omp.h>
 #include <tuple>
-#include <boost/crc.hpp>
 
 #include "linux_aligned_file_io.h"
 #include <sys/syscall.h>
@@ -27,7 +26,7 @@ namespace ccann {
 
 
   template<typename T, typename TagT>
-  uint32_t SSDIndex<T, TagT>::search_phase(const T *point, tsl::robin_set<uint32_t> *deletion_set,
+  uint32_t SSDIndex<T, TagT>::search_phase(const T *point, std::unordered_set<uint32_t> *deletion_set,
                                            std::vector<Neighbor> &exp_node_info,
                                            tsl::robin_map<uint32_t, T *> &coord_map, std::vector<uint32_t> &new_nhood,
                                            std::vector<uint64_t> &page_ref, std::vector<uint8_t> &out_pq_coords) {
@@ -70,14 +69,16 @@ namespace ccann {
 
     void (SSDIndex<T, TagT>::*search_func)(
         const T *, uint32_t, uint32_t, const uint32_t, std::vector<Neighbor> &, tsl::robin_map<uint32_t, T *> *,
-        QueryStats *, tsl::robin_set<uint32_t> * /* tags */, bool, std::vector<uint64_t> *, uint32_t) = nullptr;
+        QueryStats *, std::unordered_set<uint32_t> * /* tags */, bool, std::vector<uint64_t> *, uint32_t) = nullptr;
 
     if (this->search_mode == BEAM_SEARCH) {
       search_func = &SSDIndex<T, TagT>::do_beam_search;
+#ifndef _WIN32
     } else if (this->search_mode == PIPE_SEARCH) {
       search_func = &SSDIndex<T, TagT>::do_pipe_search;
     } else if (this->search_mode == PARA_SEARCH) {
       search_func = &SSDIndex<T, TagT>::do_para_search;
+#endif
     } else {
       LOG(ERROR) << "Invalid search mode: " << this->search_mode;
       crash();
@@ -490,11 +491,7 @@ namespace ccann {
 
     // Step 3. Update PQ Compressed Vector, this can be done in background
     // Step 4. Update in memory graph if possible
-    auto commit_task = new CommitTask{
-        .pq_coords = std::move(in_pq_coords),
-        .target_id = target_id,
-        .point = commit_point,
-    };
+    auto commit_task = new CommitTask{std::move(in_pq_coords), target_id, false, commit_point};
 
     commit_tasks.push(commit_task);
 
@@ -796,7 +793,7 @@ namespace ccann {
 
   template<typename T, typename TagT>
   int SSDIndex<T, TagT>::async_insert_in_place(const T *point, const TagT &tag,
-                                               tsl::robin_set<uint32_t> *deletion_set) {
+                                               std::unordered_set<uint32_t> *deletion_set) {
     if (this->on_pm)
       return insert_in_place(point, tag, deletion_set);
     std::vector<Neighbor> exp_node_info;
@@ -865,7 +862,7 @@ namespace ccann {
   }
 
   template<typename T, typename TagT>
-  int SSDIndex<T, TagT>::insert_in_place(const T *point, const TagT &tag, tsl::robin_set<uint32_t> *deletion_set) {
+  int SSDIndex<T, TagT>::insert_in_place(const T *point, const TagT &tag, std::unordered_set<uint32_t> *deletion_set) {
     std::lock_guard<std::mutex> insert_lock(insert_mutex_);
     std::vector<Neighbor> exp_node_info;
     tsl::robin_map<uint32_t, T *> coord_map;

@@ -26,7 +26,7 @@ namespace ccann {
   template<typename T, typename TagT>
   void SSDIndex<T, TagT>::merge_deletes(const std::string &in_path_prefix, const std::string &out_path_prefix,
                                         const std::vector<TagT> &deleted_nodes,
-                                        const tsl::robin_set<TagT> &deleted_nodes_set, uint32_t nthreads,
+                                        const std::unordered_set<TagT> &deleted_nodes_set, uint32_t nthreads,
                                         const uint32_t &n_sampled_nbrs) {
     if (nthreads == 0) {
       nthreads = this->max_nthreads;
@@ -68,7 +68,7 @@ namespace ccann {
       reader->read(read_reqs, ctx, false);
 
 #pragma omp parallel for num_threads(populate_nthreads)
-      for (uint64_t loc = loc_st; loc < loc_ed; ++loc) {
+      for (int64_t loc = static_cast<int64_t>(loc_st); loc < static_cast<int64_t>(loc_ed); ++loc) {
         // populate nhood.
         uint64_t id = loc2id(loc);
         if (id == kInvalidID) {
@@ -151,7 +151,7 @@ namespace ccann {
       reader->read(read_reqs, ctx, false);  // read in fd
 
 #pragma omp parallel for num_threads(nthreads)
-      for (uint64_t loc = loc_st; loc < loc_ed; ++loc) {
+      for (int64_t loc = static_cast<int64_t>(loc_st); loc < static_cast<int64_t>(loc_ed); ++loc) {
         uint64_t id = loc2id(loc);
         if (id == kInvalidID) {
           continue;

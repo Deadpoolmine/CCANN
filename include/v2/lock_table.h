@@ -1,14 +1,23 @@
 #ifndef LOCK_TABLE_H_
 #define LOCK_TABLE_H_
+
 #include <chrono>
+#include <cstdint>
+#include <exception>
+#include <memory>
+#include <shared_mutex>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 #include "libcuckoo/cuckoohash_map.hh"
 #include "log.h"
 
 #define SECTOR_LEN 4096
 
 inline void thread_pause() {
-  // Use pause instruction to reduce contention in tight loops.
-#ifdef __x86_64__
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+  _mm_pause();
+#elif defined(__x86_64__)
   asm volatile("pause" ::: "memory");
 #endif
 }
@@ -17,88 +26,56 @@ namespace v2 {
   template<class K, class HashFunction = std::hash<K>>
   class SparseLockTable {
    public:
-    SparseLockTable() {
-      locks_ = new libcuckoo::cuckoohash_map<K, std::pair<pthread_rwlock_t *, int>, HashFunction>();
-    }
+    int tryrdlock(const K &key) { return trylock(key, false); }
+    int trywrlock(const K &key) { return trylock(key, true); }
+    void rdlock(const K &key) { lock(key, false); }
+    void wrlock(const K &key) { lock(key, true); }
 
-    int tryrdlock(const K &key) {
-      int ret = 0;
-      locks_->upsert(key, [&](std::pair<pthread_rwlock_t *, int> &v, libcuckoo::UpsertContext ctx) {
-        if (ctx == libcuckoo::UpsertContext::NEWLY_INSERTED) {
-          v = std::make_pair(new pthread_rwlock_t, 0);
-          pthread_rwlock_init(v.first, nullptr);
-        }
-        ret = pthread_rwlock_tryrdlock(v.first);
-        if (ret == 0) {
-          v.second++;
-        }
-      });
-      return ret;
-    }
-
-    int trywrlock(const K &key) {
-      int ret = 0;
-      locks_->upsert(key, [&](std::pair<pthread_rwlock_t *, int> &v, libcuckoo::UpsertContext ctx) {
-        if (ctx == libcuckoo::UpsertContext::NEWLY_INSERTED) {
-          v = std::make_pair(new pthread_rwlock_t, 0);
-          pthread_rwlock_init(v.first, nullptr);
-        }
-        ret = pthread_rwlock_trywrlock(v.first);
-        if (ret == 0) {
-          v.second++;
-        }
-      });
-      return ret;
-    }
-
-    void rdlock(const K &key) {
-      auto cnt = 0;
-      while (tryrdlock(key) != 0) {
-        cnt++;
-        thread_pause();
-        if (cnt > 50000000) {
-          LOG(ERROR) << "SparseLockTable: rdlock timeout for key: " << key;
-          cnt = 0;
-        }
-      }
-    }
-
-    void wrlock(const K &key) {
-      auto cnt = 0;
-      // auto st = std::chrono::high_resolution_clock::now();
-      while (trywrlock(key) != 0) {
-        cnt++;
-        thread_pause();
-        if (cnt > 50000000) {
-          LOG(ERROR) << "SparseLockTable: wrlock timeout for key: " << key;
-          cnt = 0;
-        }
-      }
-    }
-
-    inline void unlock(const K &key) {
-      locks_->erase_fn(key, [&](std::pair<pthread_rwlock_t *, int> &v) {
-        if (v.second == 0) {
+    void unlock(const K &key) {
+      locks_.erase_fn(key, [&](Entry &entry) {
+        if (entry.count == 0) {
           LOG(ERROR) << "SparseLockTable: unlock a non-locked key: " << key;
-          __builtin_trap();
+          std::terminate();
         }
-        pthread_rwlock_unlock(v.first);
-
-        if (v.second == 1) {
-          pthread_rwlock_destroy(v.first);
-          delete v.first;
-        }
-        v.second--;
-        return v.second == 0;
+        if (entry.exclusive) entry.mutex->unlock();
+        else entry.mutex->unlock_shared();
+        return --entry.count == 0;
       });
     }
-
-    size_t size() {
-      return locks_->size();
-    }
+    size_t size() { return locks_.size(); }
 
    private:
-    libcuckoo::cuckoohash_map<K, std::pair<pthread_rwlock_t *, int>, HashFunction> *locks_;
+    struct Entry {
+      std::shared_ptr<std::shared_mutex> mutex;
+      int count = 0;
+      bool exclusive = false;
+    };
+    libcuckoo::cuckoohash_map<K, Entry, HashFunction> locks_;
+
+    int trylock(const K &key, bool exclusive) {
+      int result = 1;
+      locks_.upsert(key, [&](Entry &entry, libcuckoo::UpsertContext context) {
+        if (context == libcuckoo::UpsertContext::NEWLY_INSERTED)
+          entry.mutex = std::make_shared<std::shared_mutex>();
+        bool acquired = exclusive ? entry.mutex->try_lock() : entry.mutex->try_lock_shared();
+        if (acquired) {
+          ++entry.count;
+          entry.exclusive = exclusive;
+          result = 0;
+        }
+      });
+      return result;
+    }
+    void lock(const K &key, bool exclusive) {
+      auto count = 0;
+      while (trylock(key, exclusive) != 0) {
+        thread_pause();
+        if (++count > 50000000) {
+          LOG(ERROR) << "SparseLockTable: lock timeout for key: " << key;
+          count = 0;
+        }
+      }
+    }
   };
 
   template<class K, class HashFunction = std::hash<K>>
@@ -107,11 +84,7 @@ namespace v2 {
     SparseReadLockGuard(SparseLockTable<K, HashFunction> *table, const K &key) : table_(table), key_(key) {
       table_->rdlock(key_);
     }
-
-    ~SparseReadLockGuard() {
-      table_->unlock(key_);
-    }
-
+    ~SparseReadLockGuard() { table_->unlock(key_); }
    private:
     SparseLockTable<K, HashFunction> *table_;
     K key_;
@@ -123,66 +96,44 @@ namespace v2 {
     SparseWriteLockGuard(SparseLockTable<K, HashFunction> *table, const K &key) : table_(table), key_(key) {
       table_->wrlock(key_);
     }
-
-    ~SparseWriteLockGuard() {
-      table_->unlock(key_);
-    }
-
+    ~SparseWriteLockGuard() { table_->unlock(key_); }
    private:
     SparseLockTable<K, HashFunction> *table_;
     K key_;
   };
 
+  struct LockHandle {
+    std::shared_mutex *mutex;
+    bool exclusive;
+    void unlock() const {
+      if (exclusive) mutex->unlock();
+      else mutex->unlock_shared();
+    }
+  };
+
   class LockTable {
    public:
-    LockTable(size_t size) : size_(size) {
-      locks_ = new pthread_rwlock_t[size];
-      for (size_t i = 0; i < size; i++) {
-        pthread_rwlock_init(&locks_[i], nullptr);
-      }
+    explicit LockTable(size_t size) : size_(size), locks_(new std::shared_mutex[size]) {}
+    LockHandle rdlock(uint32_t key) {
+      auto *mutex = &locks_[Hash(key) % size_];
+      mutex->lock_shared();
+      return {mutex, false};
     }
-    ~LockTable() {
+    LockHandle wrlock(uint32_t key) {
+      auto *mutex = &locks_[Hash(key) % size_];
+      mutex->lock();
+      return {mutex, true};
     }
-
-    inline pthread_rwlock_t *rdlock(uint32_t key) {
-      auto lock = &locks_[Hash(key) % size_];
-      pthread_rwlock_rdlock(lock);
-      return lock;
-    }
-
-    inline uint64_t pos(uint64_t key) {
-      return Hash(key) % size_;
-    }
-
-    inline pthread_rwlock_t *wrlock(uint32_t key) {
-      auto lock = &locks_[Hash(key) % size_];
-      pthread_rwlock_wrlock(lock);
-      return lock;
-    }
-
-    inline bool tryrdlock(uint32_t key) {
-      return (pthread_rwlock_tryrdlock(&locks_[Hash(key) % size_]) == 0);
-    }
-
-    inline bool trywrlock(uint32_t key) {
-      return (pthread_rwlock_trywrlock(&locks_[Hash(key) % size_]) == 0);
-    }
-
-    inline void unlock(pthread_rwlock_t *lock) {
-      pthread_rwlock_unlock(lock);
-    }
-
-    inline void unlock(uint32_t key) {
-      pthread_rwlock_unlock(&locks_[Hash(key) % size_]);
-    }
+    uint64_t pos(uint64_t key) { return Hash(key) % size_; }
+    bool tryrdlock(uint32_t key) { return locks_[Hash(key) % size_].try_lock_shared(); }
+    bool trywrlock(uint32_t key) { return locks_[Hash(key) % size_].try_lock(); }
+    void unlock(LockHandle handle) { handle.unlock(); }
 
    private:
     size_t size_;
-    pthread_rwlock_t *locks_;
-
+    std::unique_ptr<std::shared_mutex[]> locks_;
     static const uint32_t c1 = 0xcc9e2d51;
     static const uint32_t c2 = 0x1b873593;
-
     static uint32_t fmix(uint32_t h) {
       h ^= h >> 16;
       h *= 0x85ebca6b;
@@ -191,14 +142,10 @@ namespace v2 {
       h ^= h >> 16;
       return h;
     }
-
     static uint32_t Rotate32(uint32_t val, int shift) {
-      // Avoid shifting by 32: doing so yields an undefined result.
       return shift == 0 ? val : ((val >> shift) | (val << (32 - shift)));
     }
-
     static uint32_t Mur(uint32_t a, uint32_t h) {
-      // Helper from Murmur3 for combining two 32-bit values.
       a *= c1;
       a = Rotate32(a, 17);
       a *= c2;
@@ -206,7 +153,6 @@ namespace v2 {
       h = Rotate32(h, 19);
       return h * 5 + 0xe6546b64;
     }
-
     static uint32_t Hash32Len0to4(const char *s, size_t len) {
       uint32_t b = 0;
       uint32_t c = 9;
@@ -217,34 +163,29 @@ namespace v2 {
       }
       return fmix(Mur(b, Mur(static_cast<uint32_t>(len), c)));
     }
-
     static uint32_t Hash(uint32_t x) {
       return Hash32Len0to4((const char *) &x, sizeof(uint32_t));
     }
   };
 
-  // RAII to avoid forgetting to unlock.
   class LockGuard {
    public:
-    LockGuard(pthread_rwlock_t *lock) : lock_(lock) {
-    }
+    explicit LockGuard(LockHandle lock) : lock_(lock) {}
+    LockGuard(const LockGuard &) = delete;
     LockGuard &operator=(const LockGuard &) = delete;
-    LockGuard &operator=(LockGuard &&rhs) {
-      lock_ = rhs.lock_;
-      rhs.lock_ = nullptr;
+    LockGuard(LockGuard &&rhs) noexcept : lock_(rhs.lock_) { rhs.lock_.mutex = nullptr; }
+    LockGuard &operator=(LockGuard &&rhs) noexcept {
+      if (this != &rhs) {
+        if (lock_.mutex) lock_.unlock();
+        lock_ = rhs.lock_;
+        rhs.lock_.mutex = nullptr;
+      }
       return *this;
     }
-    ~LockGuard() {
-      if (lock_) {
-        pthread_rwlock_unlock(lock_);
-        lock_ = nullptr;
-      }
-    }
-
+    ~LockGuard() { if (lock_.mutex) lock_.unlock(); }
    private:
-    pthread_rwlock_t *lock_;
+    LockHandle lock_;
   };
-
 }  // namespace v2
 
 #endif  // LOCK_TABLE_H_

@@ -38,7 +38,7 @@ namespace v2 {
     bool put(uint64_t block_no, uint8_t *value, bool ref = false) {
       return cache.upsert(block_no, [&](PageCacheItem &v, libcuckoo::UpsertContext ctx) {
         if (ctx == libcuckoo::UpsertContext::NEWLY_INSERTED) {
-          v = PageCacheItem{.buf = new uint8_t[SECTOR_LEN], .ref_cnt = 0};
+          v = PageCacheItem{new uint8_t[SECTOR_LEN], 0};
         }
         if (ref) {
           v.ref();

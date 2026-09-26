@@ -7,19 +7,6 @@ from pathlib import Path
 
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
-from wheel.bdist_wheel import bdist_wheel
-
-
-class PlatformWheel(bdist_wheel):
-    def finalize_options(self):
-        super().finalize_options()
-        if sys.platform == "win32":
-            self.root_is_pure = False
-
-    def get_tag(self):
-        if sys.platform == "win32":
-            return "py3", "none", self.plat_name.lower().replace("-", "_")
-        return super().get_tag()
 
 # Convert distutils Windows platform specifiers to CMake -A arguments
 PLAT_TO_CMAKE = {
@@ -59,6 +46,7 @@ class CMakeBuild(build_ext):
         # from Python.
         cmake_args = [
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir}{os.sep}",
+            f"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY={extdir}{os.sep}",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
             f"-DCMAKE_BUILD_TYPE={cfg}",  # not used on MSVC, but no harm
             "-DCCANN_BUILD_PYTHON=ON",
@@ -109,7 +97,8 @@ class CMakeBuild(build_ext):
             # Multi-config generators have a different way to specify configs
             if not single_config:
                 cmake_args += [
-                    f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_{cfg.upper()}={extdir}"
+                    f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_{cfg.upper()}={extdir}",
+                    f"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_{cfg.upper()}={extdir}",
                 ]
                 build_args += ["--config", cfg]
 
@@ -138,7 +127,8 @@ class CMakeBuild(build_ext):
         subprocess.run(
             ["cmake", "--build", ".", "--target", "_native", *build_args], cwd=build_temp, check=True
         )
-        shutil.copy2(Path(ext.sourcedir) / "third_party/userspace-rcu/build/lib/liburcu.so.8", extdir)
+        if sys.platform == "linux":
+            shutil.copy2(Path(ext.sourcedir) / "third_party/userspace-rcu/build/lib/liburcu.so.8", extdir)
 
 
 # The information here can also be placed in setup.cfg - better separation of
@@ -149,9 +139,9 @@ setup(
     author="Hao Guo",
     author_email="gh23@mails.tsinghua.edu.cn",
     packages=["ccannpy"],
-    package_data={"ccannpy": ["liburcu.so.8"]},
-    ext_modules=[] if sys.platform == "win32" else [CMakeExtension("ccannpy._native")],
-    cmdclass={"build_ext": CMakeBuild, "bdist_wheel": PlatformWheel},
+    package_data={"ccannpy": ["liburcu.so.8"] if sys.platform == "linux" else []},
+    ext_modules=[CMakeExtension("ccannpy._native")],
+    cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
     # extras_require={"test": ["pytest>=6.0"]},
     python_requires=">=3.8",

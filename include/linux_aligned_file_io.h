@@ -1,5 +1,9 @@
 #pragma once
 
+#ifdef _WIN32
+#include "windows_aligned_file_io.h"
+using LinuxAlignedFileIO = WindowsAlignedFileIO;
+#else
 #include "aligned_file_io.h"
 #include "v2/lock_table.h"
 #include <urcu.h>
@@ -94,3 +98,4 @@ namespace v2 {
     }
   }
 };  // namespace v2
+#endif

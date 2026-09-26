@@ -4,6 +4,7 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include "tsl/robin_set.h"
 #include "tsl/robin_map.h"
 #include "v2/lock_table.h"
@@ -147,11 +148,11 @@ namespace ccann {
     std::pair<uint32_t, uint32_t> iterate_to_fixed_point(const T *node_coords, const unsigned Lindex,
                                                          const std::vector<unsigned> &init_ids,
                                                          std::vector<Neighbor> &expanded_nodes_info,
-                                                         tsl::robin_set<unsigned> &expanded_nodes_ids,
+                                                         std::unordered_set<unsigned> &expanded_nodes_ids,
                                                          std::vector<Neighbor> &best_L_nodes, bool ret_frozen = true);
 
     void get_expanded_nodes(const size_t node, const unsigned Lindex, std::vector<unsigned> init_ids,
-                            std::vector<Neighbor> &expanded_nodes_info, tsl::robin_set<unsigned> &expanded_nodes_ids);
+                            std::vector<Neighbor> &expanded_nodes_info, std::unordered_set<unsigned> &expanded_nodes_ids);
 
     void inter_insert(unsigned n, std::vector<unsigned> &pruned_list, const Parameters &parameter);
 
