@@ -11,6 +11,7 @@
 #include <climits>
 #include <cstdint>
 #include <fcntl.h>
+#include <filesystem>
 #include <io.h>
 #include <mutex>
 #include <sys/stat.h>
@@ -22,7 +23,7 @@ using ssize_t = SSIZE_T;
 #endif
 
 inline int open(const char *path, int flags, int mode = 0666) {
-  return _open(path, flags | _O_BINARY, mode);
+  return _wopen(std::filesystem::u8path(path).wstring().c_str(), flags | _O_BINARY, mode);
 }
 inline int close(int fd) { return _close(fd); }
 inline int fsync(int fd) { return _commit(fd); }
@@ -32,7 +33,7 @@ inline int ftruncate(int fd, int64_t length) {
   return result == 0 ? 0 : -1;
 }
 inline int truncate(const char *path, int64_t length) {
-  const int fd = _open(path, _O_RDWR | _O_BINARY);
+  const int fd = open(path, _O_RDWR | _O_BINARY);
   if (fd < 0) return -1;
   const int result = ftruncate(fd, length);
   const int saved_errno = errno;

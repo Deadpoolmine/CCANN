@@ -127,7 +127,7 @@ namespace ccann {
       _u64 nr, nc;
 
       get_bin_metadata(pq_table_file, nr, nc, offset);
-      std::ifstream reader(pq_table_file, std::ios::binary | std::ios::ate);
+      std::ifstream reader(utf8_path(pq_table_file), std::ios::binary | std::ios::ate);
       reader.seekg(0);
       load_pq_pivots_new(reader, num_chunks, offset);
       post_load_pq_table();

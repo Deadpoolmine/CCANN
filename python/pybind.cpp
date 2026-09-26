@@ -50,7 +50,7 @@ std::vector<float> normalize_cosine_vector(const float *data, size_t dim) {
 
 #ifdef _WIN32
 int open_file(const std::string &path, int flags, int mode = 0) {
-  return ::_open(path.c_str(), flags | _O_BINARY, mode);
+  return ::_wopen(utf8_path(path).wstring().c_str(), flags | _O_BINARY, mode);
 }
 int close_file(int fd) { return ::_close(fd); }
 int sync_fd(int fd) { return ::_commit(fd); }
@@ -100,9 +100,9 @@ class PySSDIndex {
     std::set<uint32_t> unique_tags(tags.data(), tags.data() + tags.shape(0));
     if (unique_tags.size() != static_cast<size_t>(tags.shape(0)))
       throw py::value_error("Tags must be unique");
-    if (std::filesystem::exists(prefix + "_disk.index") ||
-        std::filesystem::exists(prefix + "_ccann.active") ||
-        std::filesystem::exists(prefix + "_ccann.flat"))
+    if (std::filesystem::exists(utf8_path(prefix + "_disk.index")) ||
+        std::filesystem::exists(utf8_path(prefix + "_ccann.active")) ||
+        std::filesystem::exists(utf8_path(prefix + "_ccann.flat")))
       throw py::value_error("Index already exists at prefix");
     std::string data_path = prefix + "_ccann_data.bin";
     std::string tags_path = prefix + "_ccann_tags.bin";
@@ -129,7 +129,7 @@ class PySSDIndex {
     for (const char *suffix : {"_disk.index", "_disk.index.tags", "_pq_compressed.bin", "_pq_pivots.bin"})
       sync_file(prefix + suffix);
     {
-      std::ofstream meta(prefix + "_ccann.meta", std::ios::trunc);
+      std::ofstream meta(utf8_path(prefix + "_ccann.meta"), std::ios::trunc);
       meta << vectors.shape(1) << ' ' << static_cast<int>(metric) << '\n';
       if (!meta)
         throw std::runtime_error("Failed to write index metadata");
@@ -137,7 +137,7 @@ class PySSDIndex {
     sync_file(prefix + "_ccann.meta");
     sync_directory(prefix + "_ccann.meta");
     auto result = load(prefix, metric, threads);
-    if (std::filesystem::exists(prefix + "_disk.index.id2loc"))
+    if (std::filesystem::exists(utf8_path(prefix + "_disk.index.id2loc")))
       sync_file(prefix + "_disk.index.id2loc");
     return result;
   }
@@ -156,19 +156,19 @@ class PySSDIndex {
       throw py::value_error("Only L2 and cosine are supported by the SSD Python index");
     uint32_t dim;
     int stored_metric;
-    std::ifstream meta(prefix + "_ccann.meta");
+    std::ifstream meta(utf8_path(prefix + "_ccann.meta"));
     if (!(meta >> dim >> stored_metric) || dim == 0 || stored_metric != static_cast<int>(metric))
       throw py::value_error("Missing or incompatible SSD index metadata");
-    if (!std::filesystem::exists(prefix + "_disk.index") ||
-        !std::filesystem::exists(prefix + "_pq_compressed.bin") ||
-        !std::filesystem::exists(prefix + "_pq_pivots.bin") ||
-        !std::filesystem::exists(prefix + "_disk.index.tags"))
+    if (!std::filesystem::exists(utf8_path(prefix + "_disk.index")) ||
+        !std::filesystem::exists(utf8_path(prefix + "_pq_compressed.bin")) ||
+        !std::filesystem::exists(utf8_path(prefix + "_pq_pivots.bin")) ||
+        !std::filesystem::exists(utf8_path(prefix + "_disk.index.tags")))
       throw py::value_error("Missing SSD index files");
     uint32_t graph_count, graph_columns, pq_count, pq_dim, tag_count, tag_dim;
     uint64_t disk_count, disk_dim;
-    std::ifstream graph(prefix + "_disk.index", std::ios::binary);
-    std::ifstream pq(prefix + "_pq_compressed.bin", std::ios::binary);
-    std::ifstream tag_file(prefix + "_disk.index.tags", std::ios::binary);
+    std::ifstream graph(utf8_path(prefix + "_disk.index"), std::ios::binary);
+    std::ifstream pq(utf8_path(prefix + "_pq_compressed.bin"), std::ios::binary);
+    std::ifstream tag_file(utf8_path(prefix + "_disk.index.tags"), std::ios::binary);
     graph.read(reinterpret_cast<char *>(&graph_count), sizeof(graph_count));
     graph.read(reinterpret_cast<char *>(&graph_columns), sizeof(graph_columns));
     graph.read(reinterpret_cast<char *>(&disk_count), sizeof(disk_count));
@@ -179,12 +179,12 @@ class PySSDIndex {
     tag_file.read(reinterpret_cast<char *>(&tag_dim), sizeof(tag_dim));
     if (!graph || !pq || !tag_file || disk_dim != dim || disk_count > pq_count ||
         pq_count != tag_count || pq_dim == 0 || tag_dim != 1 ||
-        std::filesystem::file_size(prefix + "_disk.index") < SECTOR_LEN ||
-        std::filesystem::file_size(prefix + "_pq_compressed.bin") < 8ull + uint64_t(pq_count) * pq_dim ||
-        std::filesystem::file_size(prefix + "_disk.index.tags") < 8ull + uint64_t(tag_count) * sizeof(uint32_t))
+        std::filesystem::file_size(utf8_path(prefix + "_disk.index")) < SECTOR_LEN ||
+        std::filesystem::file_size(utf8_path(prefix + "_pq_compressed.bin")) < 8ull + uint64_t(pq_count) * pq_dim ||
+        std::filesystem::file_size(utf8_path(prefix + "_disk.index.tags")) < 8ull + uint64_t(tag_count) * sizeof(uint32_t))
       throw py::value_error("Corrupt or incompatible SSD index files");
-    if (std::filesystem::exists(prefix + "_disk.index.id2loc") &&
-        std::filesystem::file_size(prefix + "_disk.index.id2loc") < uint64_t(pq_count) * sizeof(uint32_t))
+    if (std::filesystem::exists(utf8_path(prefix + "_disk.index.id2loc")) &&
+        std::filesystem::file_size(utf8_path(prefix + "_disk.index.id2loc")) < uint64_t(pq_count) * sizeof(uint32_t))
       throw py::value_error("Corrupt SSD location mapping");
     auto result = std::unique_ptr<PySSDIndex>(new PySSDIndex(root, prefix, generation, dim, metric, threads));
     result->open();
@@ -278,8 +278,8 @@ class PySSDIndex {
     }
     uint64_t next_generation = generation_ + 1;
     std::string output_prefix = generation_prefix(root_prefix_, next_generation);
-    while (std::filesystem::exists(output_prefix + "_disk.index") ||
-           std::filesystem::exists(output_prefix + "_ccann.meta")) {
+    while (std::filesystem::exists(utf8_path(output_prefix + "_disk.index")) ||
+           std::filesystem::exists(utf8_path(output_prefix + "_ccann.meta"))) {
       output_prefix = generation_prefix(root_prefix_, ++next_generation);
     }
     write_merged(output_prefix);
@@ -307,10 +307,10 @@ class PySSDIndex {
 
   void write_merged(const std::string &output_prefix) {
     if (output_prefix == root_prefix_ || output_prefix == prefix_ ||
-        std::filesystem::exists(output_prefix + "_disk.index") ||
-        std::filesystem::exists(output_prefix + "_ccann.meta") ||
-        std::filesystem::exists(output_prefix + "_ccann.active") ||
-        std::filesystem::exists(output_prefix + "_ccann.flat"))
+        std::filesystem::exists(utf8_path(output_prefix + "_disk.index")) ||
+        std::filesystem::exists(utf8_path(output_prefix + "_ccann.meta")) ||
+        std::filesystem::exists(utf8_path(output_prefix + "_ccann.active")) ||
+        std::filesystem::exists(utf8_path(output_prefix + "_ccann.flat")))
       throw py::value_error("Merge output prefix already exists");
     index_->_disk_index->flush_commits();
     auto deleted = read_removed(prefix_ + "_ccann.removed");
@@ -353,9 +353,9 @@ class PySSDIndex {
   }
 
   static uint64_t read_generation(const std::string &root) {
-    std::ifstream file(root + "_ccann.active");
+    std::ifstream file(utf8_path(root + "_ccann.active"));
     if (!file) {
-      if (std::filesystem::exists(root + "_ccann.active"))
+      if (std::filesystem::exists(utf8_path(root + "_ccann.active")))
         throw std::runtime_error("Failed to read active index generation");
       return 0;
     }
@@ -398,7 +398,7 @@ class PySSDIndex {
                                "_pq_compressed.bin", "_pq_pivots.bin", "_partition.bin.aligned",
                                "_ccann.meta", "_ccann.removed"}) {
       std::error_code error;
-      std::filesystem::remove(prefix + suffix, error);
+      std::filesystem::remove(utf8_path(prefix + suffix), error);
     }
     sync_directory(prefix);
   }
@@ -448,8 +448,8 @@ class PySSDIndex {
 
   static std::set<uint32_t> read_removed(const std::string &path) {
     std::set<uint32_t> tags;
-    if (!std::filesystem::exists(path)) return tags;
-    std::ifstream file(path, std::ios::binary);
+    if (!std::filesystem::exists(utf8_path(path))) return tags;
+    std::ifstream file(utf8_path(path), std::ios::binary);
     if (!file) throw std::runtime_error("Failed to open deletion log");
     uint64_t valid_size = 0;
     std::string line;
@@ -469,7 +469,7 @@ class PySSDIndex {
     }
     if (file.bad()) throw std::runtime_error("Failed to read deletion log");
     file.close();
-    if (valid_size != std::filesystem::file_size(path)) {
+    if (valid_size != std::filesystem::file_size(utf8_path(path))) {
       int fd = open_file(path, O_RDWR);
       if (fd < 0) throw std::system_error(errno, std::generic_category(), "open deletion log for repair");
       int result = truncate_file(fd, valid_size);
@@ -486,7 +486,7 @@ class PySSDIndex {
 
   void append_removed(uint32_t tag) {
     std::string path = prefix_ + "_ccann.removed";
-    bool created = !std::filesystem::exists(path);
+    bool created = !std::filesystem::exists(utf8_path(path));
     int fd = open_file(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd < 0) throw std::system_error(errno, std::generic_category(), "open deletion log");
     if (created) {

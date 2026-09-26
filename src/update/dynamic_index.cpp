@@ -35,8 +35,8 @@ namespace ccann {
   void copy_block(const std::string &src, const std::string &dst, size_t offset, size_t size,
                   std::atomic<size_t> &progress) {
 #ifdef _WIN32
-    int fd_src = _open(src.c_str(), _O_RDONLY | _O_BINARY);
-    int fd_dst = _open(dst.c_str(), _O_WRONLY | _O_CREAT | _O_BINARY, 0666);
+    int fd_src = _wopen(utf8_path(src).wstring().c_str(), _O_RDONLY | _O_BINARY);
+    int fd_dst = _wopen(utf8_path(dst).wstring().c_str(), _O_WRONLY | _O_CREAT | _O_BINARY, 0666);
 #else
     int fd_src = open(src.c_str(), O_RDONLY);
     int fd_dst = open(dst.c_str(), O_WRONLY | O_CREAT, 0666);
@@ -63,14 +63,14 @@ namespace ccann {
   void parallel_copy_file(const std::string &src, const std::string &dst) {
     auto time_start = std::chrono::high_resolution_clock::now();
     // 先删除目标文件（如果存在）
-    if (std::filesystem::exists(dst)) {
-      std::filesystem::remove(dst);
+    if (std::filesystem::exists(utf8_path(dst))) {
+      std::filesystem::remove(utf8_path(dst));
     }
 
-    size_t filesize = std::filesystem::file_size(src);
+    size_t filesize = std::filesystem::file_size(utf8_path(src));
 
     if (filesize <= BLOCK_SIZE) {
-      std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing);
+      std::filesystem::copy_file(utf8_path(src), utf8_path(dst), std::filesystem::copy_options::overwrite_existing);
       std::cout << src << " copied (small file)\n";
       return;
     }
@@ -111,7 +111,7 @@ namespace ccann {
 
   void copy_index(const std::string &prefix_in, const std::string &prefix_out) {
     auto copy_if_exists = [&](const std::string &src_file, const std::string &dst_file) {
-      if (std::filesystem::exists(src_file)) {
+      if (std::filesystem::exists(utf8_path(src_file))) {
         parallel_copy_file(src_file, dst_file);
       }
     };
@@ -120,11 +120,11 @@ namespace ccann {
 
     copy_if_exists(prefix_in + "_disk.index", prefix_out + "_disk.index");
 
-    if (std::filesystem::exists(prefix_in + "_disk.index.tags")) {
-      std::filesystem::copy_file(prefix_in + "_disk.index.tags", prefix_out + "_disk.index.tags",
+    if (std::filesystem::exists(utf8_path(prefix_in + "_disk.index.tags"))) {
+      std::filesystem::copy_file(utf8_path(prefix_in + "_disk.index.tags"), utf8_path(prefix_out + "_disk.index.tags"),
                                  std::filesystem::copy_options::overwrite_existing);
-    } else if (std::filesystem::exists(prefix_out + "_disk.index.tags")) {
-      std::filesystem::remove(prefix_out + "_disk.index.tags");
+    } else if (std::filesystem::exists(utf8_path(prefix_out + "_disk.index.tags"))) {
+      std::filesystem::remove(utf8_path(prefix_out + "_disk.index.tags"));
     }
 
     copy_if_exists(prefix_in + "_pq_pivots.bin", prefix_out + "_pq_pivots.bin");
@@ -135,7 +135,7 @@ namespace ccann {
 
   template<typename T, typename TagT>
   void DynamicSSDIndex<T, TagT>::build_id2loc_mapping(std::string &index_file, std::string &id2loc_file) {
-    std::ifstream index_metadata(index_file, std::ios::binary);
+    std::ifstream index_metadata(utf8_path(index_file), std::ios::binary);
     _u32 nr, nc;
     _u64 npts;
     READ_U32(index_metadata, nr);
@@ -143,7 +143,7 @@ namespace ccann {
     READ_U64(index_metadata, npts);
     index_metadata.close();
 
-    std::ofstream id2loc_writer(id2loc_file, std::ios::binary);
+    std::ofstream id2loc_writer(utf8_path(id2loc_file), std::ios::binary);
     LOG(INFO) << "Build ID to Location mapping with " << npts << " points.";
     auto sector_num = DIV_ROUND_UP(npts * sizeof(uint32_t), SECTOR_LEN);
     std::vector<IORequest> writes;
@@ -189,11 +189,11 @@ namespace ccann {
       throw std::invalid_argument("Only BEAM_SEARCH is available on Windows");
 #endif
     // check if file exists.
-    if (!std::filesystem::exists(disk_prefix_in + "_disk.index")) {
+    if (!std::filesystem::exists(utf8_path(disk_prefix_in + "_disk.index"))) {
       LOG(ERROR) << "Disk index file does not exist: " << disk_prefix_in << "_disk.index";
       exit(-1);
     }
-    if (use_mem_index && !std::filesystem::exists(disk_prefix_in + "_mem.index")) {
+    if (use_mem_index && !std::filesystem::exists(utf8_path(disk_prefix_in + "_mem.index"))) {
       LOG(ERROR) << "In-memory index file does not exist: " << disk_prefix_in << "_mem.index";
       exit(-1);
     }
@@ -221,7 +221,7 @@ namespace ccann {
     tags_writer.reset(new LinuxAlignedFileIO());
     id2loc_writer.reset(new LinuxAlignedFileIO());
 
-    bool has_tags = std::filesystem::exists(disk_prefix_in + "_disk.index.tags");
+    bool has_tags = std::filesystem::exists(utf8_path(disk_prefix_in + "_disk.index.tags"));
     _disk_index = new ccann::SSDIndex<T, TagT>(this->_dist_metric, reader, pq_compressed_writer, tags_writer,
                                                  id2loc_writer, false, has_tags, &_paras_disk);
 

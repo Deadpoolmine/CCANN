@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <memory>
@@ -54,38 +55,27 @@ inline void crash() {
   // #endif
 }
 
+inline std::filesystem::path utf8_path(const std::string &name) {
+#ifdef _WIN32
+  return std::filesystem::u8path(name);
+#else
+  return std::filesystem::path(name);
+#endif
+}
+
 static inline bool file_exists(const std::string &name, bool dirCheck = false) {
-  int val;
-  struct stat buffer;
-  val = stat(name.c_str(), &buffer);
-
-  LOG(INFO) << " Stat(" << name.c_str() << ") returned: " << val;
-
-  if (val != 0) {
-    switch (errno) {
-      case EINVAL:
-        LOG(INFO) << "Invalid argument passed to stat()";
-        break;
-      case ENOENT:
-        LOG(INFO) << "File " << name.c_str() << " does not exist";
-        break;
-      default:
-        LOG(INFO) << "Unexpected error in stat():" << errno;
-        break;
-    }
-    return false;
-  } else {
-    // the file entry exists. If reqd, check if this is a directory.
-    return dirCheck ? buffer.st_mode & S_IFDIR : true;
-  }
+  std::error_code error;
+  auto path = utf8_path(name);
+  return dirCheck ? std::filesystem::is_directory(path, error)
+                  : std::filesystem::exists(path, error);
 }
 
 inline void open_file_to_write(std::ofstream &writer, const std::string &filename) {
   writer.exceptions(std::ofstream::failbit | std::ofstream::badbit);
   if (!file_exists(filename))
-    writer.open(filename, std::ios::binary | std::ios::out);
+    writer.open(utf8_path(filename), std::ios::binary | std::ios::out);
   else
-    writer.open(filename, std::ios::binary | std::ios::in | std::ios::out);
+    writer.open(utf8_path(filename), std::ios::binary | std::ios::in | std::ios::out);
   if (writer.fail()) {
     LOG(ERROR) << std::string("Failed to open file") + filename + " for write because " << std::strerror(errno);
     crash();
@@ -93,7 +83,7 @@ inline void open_file_to_write(std::ofstream &writer, const std::string &filenam
 }
 
 inline _u64 get_file_size(const std::string &fname) {
-  std::ifstream reader(fname, std::ios::binary | std::ios::ate);
+  std::ifstream reader(utf8_path(fname), std::ios::binary | std::ios::ate);
   if (!reader.fail() && reader.is_open()) {
     _u64 end_pos = reader.tellg();
     reader.close();
@@ -106,7 +96,9 @@ inline _u64 get_file_size(const std::string &fname) {
 
 inline int delete_file(const std::string &fileName) {
   if (file_exists(fileName)) {
-    auto rc = ::remove(fileName.c_str());
+    std::error_code error;
+    bool removed = std::filesystem::remove(utf8_path(fileName), error);
+    auto rc = removed && !error ? 0 : -1;
     if (rc != 0) {
       LOG(ERROR) << "Could not delete file: " << fileName
                  << " even though it exists. This might indicate a permissions issue. "
@@ -183,7 +175,7 @@ namespace ccann {
   }
 
   inline void get_bin_metadata(const std::string &bin_file, size_t &nrows, size_t &ncols, size_t offset = 0) {
-    std::ifstream reader(bin_file.c_str(), std::ios::binary);
+    std::ifstream reader(utf8_path(bin_file), std::ios::binary);
     get_bin_metadata_impl(reader, nrows, ncols, offset);
   }
   // get_bin_metadata functions END
@@ -230,7 +222,7 @@ namespace ccann {
     // size_t actual_file_size = reader.get_file_size();
     // END OLS
     LOG(INFO) << "Reading bin file " << bin_file.c_str() << " ...";
-    std::ifstream reader(bin_file, std::ios::binary | std::ios::ate);
+    std::ifstream reader(utf8_path(bin_file), std::ios::binary | std::ios::ate);
     reader.seekg(0);
 
     load_bin_impl<T>(reader, data, npts, dim, offset);
@@ -245,7 +237,7 @@ namespace ccann {
     // size_t actual_file_size = reader.get_file_size();
     // END OLS
     LOG(INFO) << "Reading bin file " << bin_file.c_str() << " ...";
-    std::ifstream reader(bin_file, std::ios::binary | std::ios::ate);
+    std::ifstream reader(utf8_path(bin_file), std::ios::binary | std::ios::ate);
     reader.seekg(0);
 
     load_bin_impl<T>(reader, data, npts, dim, offset);
@@ -295,7 +287,7 @@ namespace ccann {
 
   inline void load_truthset(const std::string &bin_file, uint32_t *&ids, float *&dists, size_t &npts, size_t &dim,
                             uint32_t **tags = nullptr) {
-    std::ifstream reader(bin_file, std::ios::binary);
+    std::ifstream reader(utf8_path(bin_file), std::ios::binary);
     LOG(INFO) << "Reading truthset file " << bin_file.c_str() << "...";
     size_t actual_file_size = get_file_size(bin_file);
 
@@ -405,7 +397,7 @@ namespace ccann {
   inline void load_aligned_bin(const std::string &bin_file, T *&data, size_t &npts, size_t &dim, size_t &rounded_dim,
                                size_t offset = 0) {
     LOG(INFO) << "Reading bin file " << bin_file << " at offset " << offset << "...";
-    std::ifstream reader(bin_file, std::ios::binary | std::ios::ate);
+    std::ifstream reader(utf8_path(bin_file), std::ios::binary | std::ios::ate);
     reader.seekg(0);
 
     load_aligned_bin_impl(reader, data, npts, dim, rounded_dim, offset);
@@ -453,7 +445,7 @@ namespace ccann {
       LOG(INFO) << "Memory was not allocated for " << data << " before calling the load function. Exiting...";
       exit(-1);
     }
-    std::ifstream reader(bin_file, std::ios::binary);
+    std::ifstream reader(utf8_path(bin_file), std::ios::binary);
     reader.seekg(offset, reader.beg);
 
     int npts_i32, dim_i32;

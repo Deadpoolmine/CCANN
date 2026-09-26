@@ -62,8 +62,8 @@ namespace ccann {
   }
 
   void normalize_data_file(const std::string &inFileName, const std::string &outFileName) {
-    std::ifstream readr(inFileName, std::ios::binary);
-    std::ofstream writr(outFileName, std::ios::binary);
+    std::ifstream readr(utf8_path(inFileName), std::ios::binary);
+    std::ofstream writr(utf8_path(outFileName), std::ios::binary);
 
     int npts_s32, ndims_s32;
     readr.read((char *) &npts_s32, sizeof(_s32));

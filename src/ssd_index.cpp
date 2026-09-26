@@ -288,9 +288,9 @@ namespace ccann {
   void SSDIndex<T, TagT>::load_page_layout(const std::string &index_prefix, const _u64 nnodes_per_sector,
                                            const _u64 num_points) {
     std::string partition_file = index_prefix + "_partition.bin.aligned";
-    if (std::filesystem::exists(partition_file)) {
+    if (std::filesystem::exists(utf8_path(partition_file))) {
       LOG(INFO) << "Loading partition file " << partition_file;
-      std::ifstream part(partition_file, std::ios::binary);
+      std::ifstream part(utf8_path(partition_file), std::ios::binary);
       _u64 C, partition_nums, nd;
       part.read((char *) &C, sizeof(_u64));
       part.read((char *) &partition_nums, sizeof(_u64));
@@ -368,7 +368,7 @@ namespace ccann {
     this->_disk_index_file = disk_index_file;
     centroids_file = disk_index_file + "_centroids.bin";
 
-    std::ifstream index_metadata(disk_index_file, std::ios::binary);
+    std::ifstream index_metadata(utf8_path(disk_index_file), std::ios::binary);
 
     size_t tags_offset = 0;
     size_t pq_pivots_offset = 0;
@@ -561,7 +561,7 @@ namespace ccann {
     this->use_page_locks_ = use_page_locks;
     this->load_page_layout(index_prefix, nnodes_per_sector, num_points);
 
-    if (this->on_pm && std::filesystem::exists(id2loc_file)) {
+    if (this->on_pm && std::filesystem::exists(utf8_path(id2loc_file))) {
       auto mapping = id2loc_writer->get_dax(num_points * sizeof(uint32_t), false);
       const auto *locations = static_cast<const uint32_t *>(mapping);
       std::vector<std::pair<uint32_t, uint32_t>> entries;
@@ -693,7 +693,7 @@ namespace ccann {
     }
     uint32_t pos = id;
     size_t num_sectors = node_sector_no(pos);
-    std::ifstream disk_reader(_disk_index_file.c_str(), std::ios::binary);
+    std::ifstream disk_reader(utf8_path(_disk_index_file), std::ios::binary);
     std::unique_ptr<char[]> sector_buf = std::make_unique<char[]>(size_per_io);
     disk_reader.seekg(SECTOR_LEN * num_sectors, std::ios::beg);
     disk_reader.read(sector_buf.get(), size_per_io);

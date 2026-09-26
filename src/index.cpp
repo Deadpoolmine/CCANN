@@ -361,7 +361,7 @@ namespace ccann {
   template<typename T, typename TagT>
   void Index<T, TagT>::load_from_disk_index(const std::string &filename) {
     // only load V and E.
-    std::ifstream in(filename + "_disk.index", std::ios::binary);
+    std::ifstream in(utf8_path(filename + "_disk.index"), std::ios::binary);
     _u32 nr, nc;
     _u64 disk_nnodes, disk_ndims, medoid_id_on_file, max_node_len, nnodes_per_sector;
 
@@ -430,7 +430,7 @@ namespace ccann {
 
   template<typename T, typename TagT>
   size_t Index<T, TagT>::load_graph(std::string filename, size_t expected_num_points, size_t offset) {
-    std::ifstream in(filename, std::ios::binary);
+    std::ifstream in(utf8_path(filename), std::ios::binary);
     in.seekg(offset, in.beg);
     size_t expected_file_size;
     _u64 file_frozen_pts;

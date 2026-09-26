@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <filesystem>
 #include <stdexcept>
 #include <utility>
 #include "log.h"
@@ -51,9 +52,10 @@ void WindowsAlignedFileIO::open(const std::string &fname, bool enable_writes, bo
   (void) enable_writes;
   DWORD access = GENERIC_READ | GENERIC_WRITE;
   DWORD disposition = enable_create ? OPEN_ALWAYS : OPEN_EXISTING;
-  file_ = CreateFileA(fname.c_str(), access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+  auto wide_name = std::filesystem::u8path(fname).wstring();
+  file_ = CreateFileW(wide_name.c_str(), access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                       disposition, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
-  if (file_ == INVALID_HANDLE_VALUE) fail("CreateFileA");
+  if (file_ == INVALID_HANDLE_VALUE) fail("CreateFileW");
   path_ = fname;
 }
 

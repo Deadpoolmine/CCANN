@@ -33,3 +33,23 @@ def test_nonempty_index_uses_native_graph_and_pq(tmp_path):
     assert isinstance(restored._backend, ccannpy._NativeIndex)
     assert restored.npoints == 300
     assert restored.search(np.full(64, 3, dtype=np.float32), 1)[0][0] == 2000
+
+
+def test_native_graph_in_unicode_directory(tmp_path):
+    directory = tmp_path / "\u4e2d\u6587\u7d22\u5f15"
+    directory.mkdir()
+    prefix = str(directory / "graph")
+    vectors = np.random.default_rng(29).random((256, 64), dtype=np.float32)
+    tags = np.arange(256, dtype=np.uint32)
+
+    index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
+    assert isinstance(index._backend, ccannpy._NativeIndex)
+    assert index.search(vectors[0], 1)[0][0] == 0
+    index.add(np.full(64, 3, dtype=np.float32), 300)
+    index.remove(1)
+    index.merge()
+    del index
+
+    restored = ccannpy.Index.load(prefix, threads=2)
+    assert restored.npoints == 256
+    assert restored.search(np.full(64, 3, dtype=np.float32), 1)[0][0] == 300

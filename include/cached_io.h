@@ -28,7 +28,7 @@ class cached_ifstream {
 
   void open(const std::string &filename, uint64_t cacheSize, size_t initial_offset = 0) {
     this->cur_off = 0;
-    reader.open(filename, std::ios::binary | std::ios::ate);
+    reader.open(utf8_path(filename), std::ios::binary | std::ios::ate);
     fsize = reader.tellg();
     reader.seekg(initial_offset, reader.beg);
     assert(reader.is_open());

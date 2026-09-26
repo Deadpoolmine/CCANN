@@ -193,7 +193,7 @@ namespace ccann {
   void read_idmap(const std::string &fname, std::vector<unsigned> &ivecs) {
     uint32_t npts32, dim;
     size_t actual_file_size = get_file_size(fname);
-    std::ifstream reader(fname.c_str(), std::ios::binary);
+    std::ifstream reader(utf8_path(fname), std::ios::binary);
     reader.read((char *) &npts32, sizeof(uint32_t));
     reader.read((char *) &dim, sizeof(uint32_t));
     if (dim != 1 || actual_file_size != ((size_t) npts32) * sizeof(uint32_t) + 2 * sizeof(uint32_t)) {
@@ -271,7 +271,7 @@ namespace ccann {
     LOG(INFO) << "Max input width: " << max_input_width << ", output width: " << output_width;
 
     diskann_writer.write((char *) &output_width, sizeof(unsigned));
-    std::ofstream medoid_writer(medoids_file.c_str(), std::ios::binary);
+    std::ofstream medoid_writer(utf8_path(medoids_file), std::ios::binary);
     _u32 nshards_u32 = (_u32) nshards;
     _u32 one_val = 1;
     medoid_writer.write((char *) &nshards_u32, sizeof(uint32_t));
@@ -398,8 +398,8 @@ namespace ccann {
         _pvamanaIndex->build(base_file.c_str(), base_num, paras);
 
       _pvamanaIndex->save(mem_index_path.c_str());
-      std::remove(medoids_file.c_str());
-      std::remove(centroids_file.c_str());
+      delete_file(medoids_file);
+      delete_file(centroids_file);
       return 0;
     }
 
@@ -414,7 +414,7 @@ namespace ccann {
         partition_with_ram_budget<T>(base_file, sampling_rate, ram_budget, 2 * R / 3, merged_index_prefix, 2);
 
     std::string cur_centroid_filepath = merged_index_prefix + "_centroids.bin";
-    std::rename(cur_centroid_filepath.c_str(), centroids_file.c_str());
+    std::filesystem::rename(utf8_path(cur_centroid_filepath), utf8_path(centroids_file));
 
     for (int p = 0; p < num_parts; p++) {
       std::string shard_base_file = merged_index_prefix + "_subshard-" + std::to_string(p) + ".bin";
@@ -448,10 +448,10 @@ namespace ccann {
       // Required if Index.cpp thinks we are building a multi-file index.
       std::string shard_index_file_data = shard_index_file + ".data";
 
-      std::remove(shard_base_file.c_str());
-      std::remove(shard_id_file.c_str());
-      std::remove(shard_index_file.c_str());
-      std::remove(shard_index_file_data.c_str());
+      delete_file(shard_base_file);
+      delete_file(shard_id_file);
+      delete_file(shard_index_file);
+      delete_file(shard_index_file_data);
     }
     return 0;
   }
@@ -473,7 +473,7 @@ namespace ccann {
     bool tags_enabled = false;
 
     base_reader.open(base_file, read_blk_size);
-    vamana_reader.open(mem_index_file, std::ios::binary);
+    vamana_reader.open(utf8_path(mem_index_file), std::ios::binary);
     tags_enabled = tag_file != "";
 
     base_reader.read((char *) &npts, sizeof(uint32_t));
@@ -485,7 +485,7 @@ namespace ccann {
 
     // create cached reader + writer
     //    size_t          actual_file_size = get_file_size(mem_index_file);
-    std::remove(output_file.c_str());
+    delete_file(output_file);
     cached_ofstream diskann_writer;
     diskann_writer.open(output_file, write_blk_size);
 
@@ -798,15 +798,15 @@ namespace ccann {
     }
     // Remove after creating disk index
     LOG(INFO) << "Deleting memory index file: " << mem_index_path;
-    std::remove(mem_index_path.c_str());
+    delete_file(mem_index_path);
     // TODO: This is poor design. The decision to add the ".data" prefix
     // is taken by build_vamana_index. So, we shouldn't repeate it here.
     // Checking to see if we can merge the data and index into one file.
-    std::remove((mem_index_path + ".data").c_str());
+    delete_file(mem_index_path + ".data");
     if (normalized_file_path != dataFilePath) {
       // then we created a normalized vector file. Delete it.
       LOG(INFO) << "Deleting normalized vector file: " << normalized_file_path;
-      std::remove(normalized_file_path.c_str());
+      delete_file(normalized_file_path);
     }
 
     auto e = std::chrono::high_resolution_clock::now();
@@ -922,15 +922,15 @@ namespace ccann {
     gen_random_slice<T>(normalized_file_path, sample_base_prefix, sample_sampling_rate);
 
     LOG(INFO) << "Deleting memory index file: " << mem_index_path;
-    std::remove(mem_index_path.c_str());
+    delete_file(mem_index_path);
     // TODO: This is poor design. The decision to add the ".data" prefix
     // is taken by build_vamana_index. So, we shouldn't repeate it here.
     // Checking to see if we can merge the data and index into one file.
-    std::remove((mem_index_path + ".data").c_str());
+    delete_file(mem_index_path + ".data");
     if (normalized_file_path != dataFilePath) {
       // then we created a normalized vector file. Delete it.
       LOG(INFO) << "Deleting normalized vector file: " << normalized_file_path;
-      std::remove(normalized_file_path.c_str());
+      delete_file(normalized_file_path);
     }
 
     auto e = std::chrono::high_resolution_clock::now();

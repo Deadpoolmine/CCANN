@@ -372,7 +372,8 @@ namespace ccann {
     ccann::save_bin<uint8_t>(pq_out, pq_coords.data(), new_npoints, n_chunks);
 
     if (in_path_prefix != out_path_prefix) {
-      std::filesystem::copy(in_path_prefix + "_pq_pivots.bin", out_path_prefix + "_pq_pivots.bin",
+      std::filesystem::copy(utf8_path(in_path_prefix + "_pq_pivots.bin"),
+                            utf8_path(out_path_prefix + "_pq_pivots.bin"),
                             std::filesystem::copy_options::overwrite_existing);
     }
   }

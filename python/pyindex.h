@@ -85,7 +85,7 @@ class PyIndex : public BasePyIndex {
     mem_index_->load(mem_index_path.c_str());
 
     auto disk_index_file = index_prefix + "_disk.index";
-    if (std::filesystem::exists(disk_index_file)) {
+    if (std::filesystem::exists(utf8_path(disk_index_file))) {
       use_disk_index_ = true;
       disk_index_->load(index_prefix.c_str(), params_.max_nthreads, true, true);
       disk_index_->mem_index_.reset(mem_index_.get());
@@ -129,7 +129,7 @@ class PyIndex : public BasePyIndex {
 
     std::string sample_id_bin = sample_prefix + "_ids.bin";
     std::ifstream reader;
-    reader.open(sample_id_bin, std::ios::binary);
+    reader.open(utf8_path(sample_id_bin), std::ios::binary);
     reader.seekg(2 * sizeof(uint32_t), std::ios::beg);
     uint32_t tags_size = data_num * data_dim;
     std::vector<TagT> tags(data_num);

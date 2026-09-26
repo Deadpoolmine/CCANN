@@ -25,11 +25,11 @@
 template<typename T>
 void gen_random_slice(const std::string base_file, const std::string output_prefix, double sampling_rate,
                       size_t offset) {
-  std::ifstream base_reader(base_file.c_str(), std::ios::binary);
+  std::ifstream base_reader(utf8_path(base_file), std::ios::binary);
   base_reader.seekg(offset, std::ios::beg);
 
-  std::ofstream sample_writer(std::string(output_prefix + "_data.bin").c_str(), std::ios::binary);
-  std::ofstream sample_id_writer(std::string(output_prefix + "_ids.bin").c_str(), std::ios::binary);
+  std::ofstream sample_writer(utf8_path(output_prefix + "_data.bin"), std::ios::binary);
+  std::ofstream sample_id_writer(utf8_path(output_prefix + "_ids.bin"), std::ios::binary);
 
   std::random_device rd;  // Will be used to obtain a seed for the random number engine
   auto x = rd();
@@ -100,7 +100,7 @@ void gen_random_slice(const std::string data_file, double p_val, float *&sampled
 
   // amount to read in one shot
   _u64 read_blk_size = 64 * 1024 * 1024;
-  std::ifstream base_reader(data_file.c_str(), std::ios::binary);
+  std::ifstream base_reader(utf8_path(data_file), std::ios::binary);
 
   // metadata: npts, ndims
   base_reader.read((char *) &npts32, sizeof(unsigned));
@@ -423,7 +423,7 @@ int generate_pq_data_from_pivots(const std::string data_file, unsigned num_cente
     LOG(INFO) << "Loaded PQ pivot information";
   }
 
-  std::ofstream compressed_file_writer(pq_compressed_vectors_path, std::ios::binary);
+  std::ofstream compressed_file_writer(utf8_path(pq_compressed_vectors_path), std::ios::binary);
   _u32 num_pq_chunks_u32 = num_pq_chunks;
 
   compressed_file_writer.write((char *) &num_points, sizeof(uint32_t));
@@ -595,8 +595,8 @@ int shard_data_into_clusters(const std::string data_file, float *pivots, const s
   for (size_t i = 0; i < num_centers; i++) {
     std::string data_filename = prefix_path + "_subshard-" + std::to_string(i) + ".bin";
     std::string idmap_filename = prefix_path + "_subshard-" + std::to_string(i) + "_ids_uint32.bin";
-    shard_data_writer[i] = std::ofstream(data_filename.c_str(), std::ios::binary);
-    shard_idmap_writer[i] = std::ofstream(idmap_filename.c_str(), std::ios::binary);
+    shard_data_writer[i] = std::ofstream(utf8_path(data_filename), std::ios::binary);
+    shard_idmap_writer[i] = std::ofstream(utf8_path(idmap_filename), std::ios::binary);
     shard_data_writer[i].write((char *) &dummy_size, sizeof(uint32_t));
     shard_data_writer[i].write((char *) &basedim32, sizeof(uint32_t));
     shard_idmap_writer[i].write((char *) &dummy_size, sizeof(uint32_t));
