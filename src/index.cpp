@@ -15,6 +15,7 @@
 #include <string>
 #include "tsl/robin_set.h"
 #include <unordered_map>
+#include <unordered_set>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -817,7 +818,7 @@ namespace ccann {
 
       if (prune_needed) {
         copy_of_neighbors.push_back(n);
-        tsl::robin_set<unsigned> dummy_visited;
+        std::unordered_set<unsigned> dummy_visited;
         std::vector<Neighbor> dummy_pool(0);
 
         size_t reserveSize = (size_t) (std::ceil(1.05 * SLACK_FACTOR * range));
@@ -904,7 +905,7 @@ namespace ccann {
     for (_s64 node_ctr = 0; node_ctr < n_vecs_to_visit; node_ctr++) {
       auto node = node_ctr;
       if (_final_graph[node].size() > range) {
-        tsl::robin_set<unsigned> dummy_visited;
+        std::unordered_set<unsigned> dummy_visited;
         std::vector<Neighbor> dummy_pool(0);
         std::vector<unsigned> new_out_neighbors;
 
