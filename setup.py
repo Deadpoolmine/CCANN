@@ -18,7 +18,7 @@ class PlatformWheel(bdist_wheel):
 
     def get_tag(self):
         if sys.platform == "win32":
-            return "py3", "none", self.plat_name
+            return "py3", "none", self.plat_name.lower().replace("-", "_")
         return super().get_tag()
 
 # Convert distutils Windows platform specifiers to CMake -A arguments
