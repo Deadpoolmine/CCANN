@@ -103,9 +103,9 @@ else()
     message(STATUS "Compiler or CPU do not support -mavx512f and -mavx2.")
 endif()
 
+if(NOT WIN32)
 #OpenMP
 find_package(OpenMP REQUIRED COMPONENTS CXX)
-if(NOT WIN32)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 endif()
