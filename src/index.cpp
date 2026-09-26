@@ -870,12 +870,18 @@ namespace ccann {
     ccann::Timer link_timer;
 #pragma omp parallel for schedule(dynamic)
     for (int64_t node = 0; node < n_vecs_to_visit; node++) {
+#ifdef _WIN32
+      if (node < 5) std::cerr << "graph node " << node << " search start" << std::endl;
+#endif
       // search.
       std::vector<Neighbor> pool;
       tsl::robin_set<unsigned> visited;
       pool.reserve(2 * L);
       visited.reserve(2 * L);
       get_expanded_nodes(node, L, init_ids, pool, visited);
+#ifdef _WIN32
+      if (node < 5) std::cerr << "graph node " << node << " search done" << std::endl;
+#endif
       // remove the node itself from pool.
       for (auto it = pool.begin(); it != pool.end();) {
         if (it->id == node) {
@@ -887,6 +893,9 @@ namespace ccann {
       // prune neighbors.
       std::vector<unsigned> pruned_list;
       prune_neighbors(node, pool, parameters, pruned_list);
+#ifdef _WIN32
+      if (node < 5) std::cerr << "graph node " << node << " prune done" << std::endl;
+#endif
 
       {
         // v2::SparseWriteLockGuard<uint64_t> guard(&_locks, node);
@@ -895,6 +904,9 @@ namespace ccann {
       }
 
       inter_insert(node, pruned_list, parameters);
+#ifdef _WIN32
+      if (node < 5) std::cerr << "graph node " << node << " insert done" << std::endl;
+#endif
 
       if (node % 100000 == 0) {
         std::cerr << "\r" << (100.0 * node) / (n_vecs_to_visit) << "% of index build completed.";
