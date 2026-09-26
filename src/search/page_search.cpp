@@ -29,7 +29,7 @@ namespace ccann {
     std::string partition_file = index_prefix + "_partition.bin.aligned";
     if (std::filesystem::exists(partition_file)) {
       LOG(INFO) << "Loading partition file " << partition_file;
-      std::ifstream part(partition_file);
+      std::ifstream part(partition_file, std::ios::binary);
       _u64 C, partition_nums, nd;
       part.read((char *) &C, sizeof(_u64));
       part.read((char *) &partition_nums, sizeof(_u64));

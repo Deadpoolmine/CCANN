@@ -25,7 +25,7 @@
 template<typename T>
 void gen_random_slice(const std::string base_file, const std::string output_prefix, double sampling_rate,
                       size_t offset) {
-  std::ifstream base_reader(base_file.c_str());
+  std::ifstream base_reader(base_file.c_str(), std::ios::binary);
   base_reader.seekg(offset, std::ios::beg);
 
   std::ofstream sample_writer(std::string(output_prefix + "_data.bin").c_str(), std::ios::binary);
@@ -100,7 +100,7 @@ void gen_random_slice(const std::string data_file, double p_val, float *&sampled
 
   // amount to read in one shot
   _u64 read_blk_size = 64 * 1024 * 1024;
-  std::ifstream base_reader(data_file.c_str());
+  std::ifstream base_reader(data_file.c_str(), std::ios::binary);
 
   // metadata: npts, ndims
   base_reader.read((char *) &npts32, sizeof(unsigned));

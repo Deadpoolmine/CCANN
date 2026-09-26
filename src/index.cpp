@@ -866,9 +866,6 @@ namespace ccann {
     ccann::Timer link_timer;
 #pragma omp parallel for schedule(dynamic)
     for (int64_t node = 0; node < n_vecs_to_visit; node++) {
-#ifdef _WIN32
-      std::cerr << "graph node " << node << " start" << std::endl;
-#endif
       // search.
       std::vector<Neighbor> pool;
       tsl::robin_set<unsigned> visited;
@@ -894,9 +891,6 @@ namespace ccann {
       }
 
       inter_insert(node, pruned_list, parameters);
-#ifdef _WIN32
-      std::cerr << "graph node " << node << " done" << std::endl;
-#endif
 
       if (node % 100000 == 0) {
         std::cerr << "\r" << (100.0 * node) / (n_vecs_to_visit) << "% of index build completed.";
