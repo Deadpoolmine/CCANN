@@ -1,0 +1,27 @@
+name: Windows Python package
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows-wheel:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install build pytest
+      - run: python -m build --wheel
+      - shell: pwsh
+        run: python -m pip install (Get-ChildItem dist/*.whl | Select-Object -First 1).FullName
+      - shell: pwsh
+        run: |
+          Push-Location $env:RUNNER_TEMP
+          python -c "import ccannpy; assert ccannpy._NativeIndex is None; print(ccannpy.__file__)"
+          Pop-Location
+      - run: python -m pytest -q tests/test_python_portable.py

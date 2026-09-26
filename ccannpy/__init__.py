@@ -2,14 +2,24 @@
 
 import os
 import struct
+import sys
 import tempfile
 import threading
 import zlib
 
 import numpy as np
 
-from ._native import Index as _NativeIndex
-from ._native import Metric
+if sys.platform == "win32":
+    from enum import IntEnum
+
+    class Metric(IntEnum):
+        L2 = 0
+        COSINE = 4
+
+    _NativeIndex = None
+else:
+    from ._native import Index as _NativeIndex
+    from ._native import Metric
 
 
 _MAGIC = b"CCANNF01"
@@ -17,6 +27,17 @@ _HEADER = struct.Struct("<8sI")
 _RECORD_HEAD = struct.Struct("<BI")
 _CHECKSUM = struct.Struct("<I")
 _MERGE_THRESHOLD = 10000
+_BINARY = getattr(os, "O_BINARY", 0)
+
+
+def _sync_directory(path):
+    if os.name == "nt":
+        return
+    directory = os.open(os.path.dirname(path) or ".", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def _write_all(fd, data):
@@ -39,20 +60,24 @@ class _FlatIndex:
         self._pending_removals = 0
 
     @classmethod
-    def create(cls, prefix, dimension):
+    def create(cls, prefix, dimension, vectors=None, tags=None):
         path = prefix + "_ccann.flat"
         if os.path.exists(prefix + "_disk.index") or os.path.exists(prefix + "_ccann.active"):
             raise ValueError("Index already exists at prefix")
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | _BINARY, 0o600)
         try:
             _write_all(fd, _HEADER.pack(_MAGIC, dimension))
+            result = cls(fd, dimension, path)
+            if vectors is not None:
+                for tag, vector in zip(tags, vectors):
+                    tag = int(tag)
+                    body = _RECORD_HEAD.pack(1, tag) + vector.tobytes()
+                    _write_all(fd, body + _CHECKSUM.pack(zlib.crc32(body)))
+                    result._seen_tags.add(tag)
+                    result._vectors[tag] = vector.copy()
             os.fsync(fd)
-            directory = os.open(os.path.dirname(path) or ".", os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-            return cls(fd, dimension, path)
+            _sync_directory(path)
+            return result
         except BaseException:
             os.close(fd)
             raise
@@ -60,10 +85,10 @@ class _FlatIndex:
     @classmethod
     def load(cls, prefix):
         path = prefix + "_ccann.flat"
-        fd = os.open(path, os.O_RDWR)
+        fd = os.open(path, os.O_RDWR | _BINARY)
         result = None
         try:
-            header = os.pread(fd, _HEADER.size, 0)
+            header = os.read(fd, _HEADER.size)
             if len(header) != _HEADER.size:
                 raise ValueError("Corrupt empty index header")
             magic, dimension = _HEADER.unpack(header)
@@ -74,7 +99,7 @@ class _FlatIndex:
             record_size = _RECORD_HEAD.size + dimension * 4 + _CHECKSUM.size
             offset = _HEADER.size
             while offset + record_size <= size:
-                record = os.pread(fd, record_size, offset)
+                record = os.read(fd, record_size)
                 body, checksum = record[:-4], _CHECKSUM.unpack(record[-4:])[0]
                 if len(record) != record_size or zlib.crc32(body) != checksum:
                     if offset + record_size < size:
@@ -173,14 +198,13 @@ class _FlatIndex:
             try:
                 self._write_live_records(fd)
                 os.fsync(fd)
-                os.link(temporary, path)
-                directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
-            finally:
                 os.close(fd)
+                fd = None
+                os.link(temporary, path)
+                _sync_directory(path)
+            finally:
+                if fd is not None:
+                    os.close(fd)
                 os.unlink(temporary)
 
     def _write_live_records(self, fd):
@@ -196,19 +220,21 @@ class _FlatIndex:
         try:
             self._write_live_records(fd)
             os.fsync(fd)
+            os.close(fd)
+            fd = None
+            os.close(self._fd)
+            self._fd = None
             os.replace(temporary, self._path)
             published = True
-            old_fd, self._fd = self._fd, fd
-            fd = None
-            os.close(old_fd)
+            self._fd = os.open(self._path, os.O_RDWR | _BINARY)
+            os.lseek(self._fd, 0, os.SEEK_END)
             self._seen_tags = set(self._vectors)
             self._pending_removals = 0
-            directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            _sync_directory(self._path)
         finally:
+            if self._fd is None:
+                self._fd = os.open(self._path, os.O_RDWR | _BINARY)
+                os.lseek(self._fd, 0, os.SEEK_END)
             if fd is not None:
                 os.close(fd)
             if not published:
@@ -246,6 +272,16 @@ class Index:
             return cls(_FlatIndex.create(prefix, vectors.shape[1]), threads)
         if os.path.exists(prefix + "_ccann.flat") or os.path.exists(prefix + "_ccann.active"):
             raise ValueError("Index already exists at prefix")
+        if _NativeIndex is None:
+            if (not isinstance(vectors, np.ndarray) or vectors.dtype != np.float32 or
+                    vectors.ndim != 2 or not vectors.flags.c_contiguous or
+                    vectors.shape[0] < 256 or vectors.shape[1] == 0 or
+                    not isinstance(tags, np.ndarray) or tags.dtype != np.uint32 or
+                    tags.shape != (vectors.shape[0],) or not tags.flags.c_contiguous):
+                raise ValueError("Expected at least 256 float32 vectors and matching uint32 tags")
+            if len(set(tags.tolist())) != len(tags):
+                raise ValueError("Tags must be unique")
+            return cls(_FlatIndex.create(prefix, vectors.shape[1], vectors, tags), threads)
         return cls(_NativeIndex.create(prefix, vectors, tags, metric, threads), threads)
 
     @classmethod
@@ -254,6 +290,8 @@ class Index:
             if not threads or metric != Metric.L2:
                 raise ValueError("Only L2 and positive threads are supported")
             return cls(_FlatIndex.load(prefix), threads)
+        if _NativeIndex is None:
+            raise ValueError("Index format requires the Linux native extension")
         return cls(_NativeIndex.load(prefix, metric, threads), threads)
 
     def __getattr__(self, name):
