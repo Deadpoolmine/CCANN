@@ -272,7 +272,7 @@ os.kill(os.getpid(), signal.SIGKILL)
     assert restored.npoints == 299
     restored.remove(1001)
     restored.add(np.full(64, 7, dtype=np.float32), 9001)
-    assert not hasattr(restored, "merge")
+    assert hasattr(restored, "merge")
     assert not (tmp_path / "index_ccann.active").exists()
     del restored
     restored = ccannpy.Index.load(prefix, threads=2)
@@ -288,7 +288,7 @@ def test_empty_index_auto_compacts_deleted_records(tmp_path, monkeypatch):
                                  np.empty(0, dtype=np.uint32))
     for tag in range(5):
         index.add(np.full(4, tag, dtype=np.float32), tag)
-    assert not hasattr(index, "merge")
+    assert hasattr(index, "merge")
     index.remove(1)
     index.remove(3)
     before = (tmp_path / "empty_ccann.flat").stat().st_size
@@ -306,7 +306,7 @@ def test_graph_auto_merge_at_10000_deletes(tmp_path):
     vectors = np.random.default_rng(31).random((10001, 32), dtype=np.float32)
     tags = np.arange(10001, dtype=np.uint32)
     index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
-    assert not hasattr(index, "merge")
+    assert hasattr(index, "merge")
     del index
     script = """
 import os, signal, sys
@@ -391,3 +391,54 @@ def test_graph_load_finishes_interrupted_auto_merge(tmp_path):
     assert restored.npoints == 1
     assert (tmp_path / "index_ccann.active").read_text() == "1\n"
     assert restored.search(vectors[10000], 1)[0][0] == 10000
+
+
+def test_graph_manual_merge_and_snapshot(ssd_index, tmp_path):
+    prefix, vectors, tags = ssd_index
+    index = ccannpy.Index.create(prefix, vectors, tags, threads=2)
+    index.remove(1000)
+    assert index.merge() is index
+    assert (tmp_path / "index_ccann.active").read_text() == "1\n"
+    assert not (tmp_path / "index_ccann_gen_1_ccann.removed").exists()
+    assert index.npoints == 299
+    assert index.merge() is index
+    assert (tmp_path / "index_ccann.active").read_text() == "2\n"
+    index.add(np.full(64, 7, dtype=np.float32), 9001)
+    index.remove(1001)
+
+    snapshot_prefix = str(tmp_path / "snapshot")
+    snapshot = index.merge(snapshot_prefix)
+    with pytest.raises(ValueError, match="already exists"):
+        index.merge(snapshot_prefix)
+    assert snapshot.npoints == index.npoints == 299
+    assert not (tmp_path / "snapshot_ccann.active").exists()
+    with open(snapshot_prefix + "_disk.index.tags", "rb") as file:
+        count, _ = np.fromfile(file, dtype=np.uint32, count=2)
+        snapshot_tags = np.fromfile(file, dtype=np.uint32, count=int(count))
+    assert 1000 not in snapshot_tags and 1001 not in snapshot_tags
+    assert 9001 in snapshot_tags
+    index.remove(1002)
+    assert index.npoints == 298
+    assert snapshot.npoints == 299
+    assert ccannpy.Index.load(prefix, threads=2).npoints == 298
+    assert ccannpy.Index.load(snapshot_prefix, threads=2).npoints == 299
+
+
+def test_empty_index_manual_merge_and_snapshot(tmp_path):
+    prefix = str(tmp_path / "empty")
+    index = ccannpy.Index.create(prefix, np.empty((0, 4), dtype=np.float32),
+                                 np.empty(0, dtype=np.uint32))
+    vector = np.array([1, 2, 3, 4], dtype=np.float32)
+    index.add(vector, 41)
+    index.add(vector + 1, 42)
+    index.remove(42)
+    before = (tmp_path / "empty_ccann.flat").stat().st_size
+    assert index.merge() is index
+    assert (tmp_path / "empty_ccann.flat").stat().st_size < before
+    snapshot_prefix = str(tmp_path / "snapshot")
+    snapshot = index.merge(snapshot_prefix)
+    assert snapshot.npoints == 1
+    index.add(vector + 2, 43)
+    assert index.npoints == 2
+    assert ccannpy.Index.load(snapshot_prefix).npoints == 1
+    assert ccannpy.Index.load(prefix).npoints == 2

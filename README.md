@@ -16,11 +16,12 @@ index = ccannpy.Index.create("/path/to/index", vectors, tags, ccannpy.Metric.L2)
 index.add(np.zeros(64, dtype=np.float32), 300)
 ids, distances = index.search(vectors[0], k=10)
 index.remove(300)
+index.merge()  # optional: compact before the automatic threshold
 index = ccannpy.Index.load("/path/to/index", ccannpy.Metric.L2)
 print(index.npoints, index.dimension)
 ```
 
-`create` accepts either no vectors or at least 256 vectors for PQ training. To start empty, pass arrays shaped `(0, dimension)` and `(0,)`; this index stores each update in an fsynced SSD log and uses exact search. It does not automatically convert to the graph index as it grows. Vectors are float32, tags are uint32, and the input dimension and metric are checked on load. Only L2 is supported by this Python API. Use a fresh prefix for each build. Tags cannot be reused within an index generation. Every `add` is durable when it returns, so there is no separate `save`. Graph `remove` appends and syncs one tag in the deletion log. When 10,000 distinct deletions are pending, `remove` synchronously compacts into a new generation and publishes it under the same index prefix. If no points remain, compaction waits until the next `add`. The old generation is removed after publication. Empty indexes compact their update log at the same threshold. An embedding record store remains the source of truth for rebuilding a missing or damaged index.
+`create` accepts either no vectors or at least 256 vectors for PQ training. To start empty, pass arrays shaped `(0, dimension)` and `(0,)`; this index stores each update in an fsynced SSD log and uses exact search. It does not automatically convert to the graph index as it grows. Vectors are float32, tags are uint32, and the input dimension and metric are checked on load. Only L2 is supported by this Python API. Use a fresh prefix for each build. Tags cannot be reused within an index generation. Every `add` is durable when it returns, so there is no separate `save`. Graph `remove` appends and syncs one tag in the deletion log. When 10,000 distinct deletions are pending, `remove` synchronously compacts into a new generation and publishes it under the same index prefix. Call `merge()` to compact earlier, or `merge(output_prefix)` to create an independent index snapshot at a fresh prefix. If no points remain, automatic graph compaction waits until the next `add`. The old generation is removed after publication. Empty indexes compact their update log at the same threshold. An embedding record store remains the source of truth for rebuilding a missing or damaged index.
 
 ## 🧠 Core Innovation: Soft Insert
 

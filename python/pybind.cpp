@@ -154,16 +154,61 @@ class PySSDIndex {
     compact_if_needed();
   }
 
-  void compact_if_needed() {
+  void merge() {
+    std::lock_guard<std::mutex> lock(mu_);
+    compact_if_needed(true);
+  }
+
+  void merge_to(const std::string &output_prefix) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (index_->_disk_index->cur_id.load() == removed_.size())
+      throw py::value_error("Cannot merge an index with no live points");
+    write_merged(output_prefix);
+  }
+
+  void compact_if_needed(bool force = false) {
     constexpr size_t kMergeThreshold = 10000;
-    if (removed_.size() < kMergeThreshold || index_->_disk_index->cur_id.load() == removed_.size())
+    if (!force && removed_.size() < kMergeThreshold) return;
+    if (index_->_disk_index->cur_id.load() == removed_.size()) {
+      if (force) throw py::value_error("Cannot merge an index with no live points");
       return;
+    }
     uint64_t next_generation = generation_ + 1;
     std::string output_prefix = generation_prefix(root_prefix_, next_generation);
     while (std::filesystem::exists(output_prefix + "_disk.index") ||
            std::filesystem::exists(output_prefix + "_ccann.meta")) {
       output_prefix = generation_prefix(root_prefix_, ++next_generation);
     }
+    write_merged(output_prefix);
+    auto next = load_at(root_prefix_, next_generation, metric_, threads_);
+    sync_file(output_prefix + "_disk.index.id2loc");
+    bool published = false;
+    std::exception_ptr publication_error;
+    try {
+      publish_generation(next_generation, published);
+    } catch (...) {
+      if (!published) throw;
+      publication_error = std::current_exception();
+    }
+    std::string old_prefix = prefix_;
+    index_.swap(next->index_);
+    distance_.swap(next->distance_);
+    prefix_.swap(next->prefix_);
+    known_tags_.swap(next->known_tags_);
+    removed_.clear();
+    generation_ = next_generation;
+    next.reset();
+    if (!publication_error) cleanup_generation(old_prefix);
+    if (publication_error) std::rethrow_exception(publication_error);
+  }
+
+  void write_merged(const std::string &output_prefix) {
+    if (output_prefix == root_prefix_ || output_prefix == prefix_ ||
+        std::filesystem::exists(output_prefix + "_disk.index") ||
+        std::filesystem::exists(output_prefix + "_ccann.meta") ||
+        std::filesystem::exists(output_prefix + "_ccann.active") ||
+        std::filesystem::exists(output_prefix + "_ccann.flat"))
+      throw py::value_error("Merge output prefix already exists");
     index_->_disk_index->flush_commits();
     auto deleted = read_removed(prefix_ + "_ccann.removed");
     std::vector<uint32_t> tags(deleted.begin(), deleted.end());
@@ -185,26 +230,6 @@ class PySSDIndex {
     }
     ::close(fd);
     sync_directory(meta_path);
-    auto next = load_at(root_prefix_, next_generation, metric_, threads_);
-    sync_file(output_prefix + "_disk.index.id2loc");
-    bool published = false;
-    std::exception_ptr publication_error;
-    try {
-      publish_generation(next_generation, published);
-    } catch (...) {
-      if (!published) throw;
-      publication_error = std::current_exception();
-    }
-    std::string old_prefix = prefix_;
-    index_.swap(next->index_);
-    distance_.swap(next->distance_);
-    prefix_.swap(next->prefix_);
-    known_tags_.swap(next->known_tags_);
-    removed_.clear();
-    generation_ = next_generation;
-    next.reset();
-    if (!publication_error) cleanup_generation(old_prefix);
-    if (publication_error) std::rethrow_exception(publication_error);
   }
 
   uint64_t npoints() const {
@@ -420,6 +445,9 @@ PYBIND11_MODULE(_native, m) {
       .def("search", &PySSDIndex::search, py::arg("query").noconvert(), py::arg("k"),
            py::arg("search_l") = 64)
       .def("remove", &PySSDIndex::remove, py::call_guard<py::gil_scoped_release>())
+      .def("merge", &PySSDIndex::merge, py::call_guard<py::gil_scoped_release>())
+      .def("merge_to", &PySSDIndex::merge_to, py::arg("output_prefix"),
+           py::call_guard<py::gil_scoped_release>())
       .def_property_readonly("npoints", &PySSDIndex::npoints)
       .def_property_readonly("dimension", &PySSDIndex::dimension);
 }

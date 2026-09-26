@@ -157,15 +157,44 @@ class _FlatIndex:
                 if self._pending_removals >= _MERGE_THRESHOLD:
                     self._compact_locked()
 
+    def merge(self):
+        with self._lock:
+            if self._pending_removals:
+                self._compact_locked()
+
+    def merge_to(self, output_prefix):
+        with self._lock:
+            path = output_prefix + "_ccann.flat"
+            if (os.path.exists(path) or os.path.exists(output_prefix + "_disk.index") or
+                    os.path.exists(output_prefix + "_ccann.active")):
+                raise ValueError("Merge output prefix already exists")
+            directory = os.path.dirname(path) or "."
+            fd, temporary = tempfile.mkstemp(prefix=".ccann-merge-", dir=directory)
+            try:
+                self._write_live_records(fd)
+                os.fsync(fd)
+                os.link(temporary, path)
+                directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            finally:
+                os.close(fd)
+                os.unlink(temporary)
+
+    def _write_live_records(self, fd):
+        _write_all(fd, _HEADER.pack(_MAGIC, self._dimension))
+        for tag, vector in self._vectors.items():
+            body = _RECORD_HEAD.pack(1, tag) + vector.tobytes()
+            _write_all(fd, body + _CHECKSUM.pack(zlib.crc32(body)))
+
     def _compact_locked(self):
         directory = os.path.dirname(self._path) or "."
         fd, temporary = tempfile.mkstemp(prefix=".ccann-merge-", dir=directory)
         published = False
         try:
-            _write_all(fd, _HEADER.pack(_MAGIC, self._dimension))
-            for tag, vector in self._vectors.items():
-                body = _RECORD_HEAD.pack(1, tag) + vector.tobytes()
-                _write_all(fd, body + _CHECKSUM.pack(zlib.crc32(body)))
+            self._write_live_records(fd)
             os.fsync(fd)
             os.replace(temporary, self._path)
             published = True
@@ -229,6 +258,13 @@ class Index:
 
     def __getattr__(self, name):
         return getattr(self._backend, name)
+
+    def merge(self, output_prefix=None):
+        if output_prefix is None:
+            self._backend.merge()
+            return self
+        self._backend.merge_to(output_prefix)
+        return self.load(output_prefix, threads=self._threads)
 
 
 __all__ = ["Index", "Metric"]
