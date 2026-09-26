@@ -13,6 +13,7 @@ from ._native import Metric
 
 
 _MAGIC = b"CCANNF01"
+_COSINE_MAGIC = b"CCANNC01"
 _HEADER = struct.Struct("<8sI")
 _RECORD_HEAD = struct.Struct("<BI")
 _CHECKSUM = struct.Struct("<I")
@@ -40,24 +41,25 @@ def _write_all(fd, data):
 
 
 class _FlatIndex:
-    def __init__(self, fd, dimension, path):
+    def __init__(self, fd, dimension, path, metric):
         self._fd = fd
         self._dimension = dimension
         self._path = path
+        self._metric = metric
         self._lock = threading.Lock()
         self._vectors = {}
         self._seen_tags = set()
         self._pending_removals = 0
 
     @classmethod
-    def create(cls, prefix, dimension, vectors=None, tags=None):
+    def create(cls, prefix, dimension, metric, vectors=None, tags=None):
         path = prefix + "_ccann.flat"
         if os.path.exists(prefix + "_disk.index") or os.path.exists(prefix + "_ccann.active"):
             raise ValueError("Index already exists at prefix")
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | _BINARY, 0o600)
         try:
-            _write_all(fd, _HEADER.pack(_MAGIC, dimension))
-            result = cls(fd, dimension, path)
+            _write_all(fd, _HEADER.pack(_COSINE_MAGIC if metric == Metric.COSINE else _MAGIC, dimension))
+            result = cls(fd, dimension, path, metric)
             if vectors is not None:
                 for tag, vector in zip(tags, vectors):
                     tag = int(tag)
@@ -73,7 +75,7 @@ class _FlatIndex:
             raise
 
     @classmethod
-    def load(cls, prefix):
+    def load(cls, prefix, metric):
         path = prefix + "_ccann.flat"
         fd = os.open(path, os.O_RDWR | _BINARY)
         result = None
@@ -82,9 +84,12 @@ class _FlatIndex:
             if len(header) != _HEADER.size:
                 raise ValueError("Corrupt empty index header")
             magic, dimension = _HEADER.unpack(header)
-            if magic != _MAGIC or dimension == 0:
+            expected_magic = _COSINE_MAGIC if metric == Metric.COSINE else _MAGIC
+            if magic not in (_MAGIC, _COSINE_MAGIC) or dimension == 0:
                 raise ValueError("Corrupt empty index header")
-            result = cls(fd, dimension, path)
+            if magic != expected_magic:
+                raise ValueError("Incompatible index metric")
+            result = cls(fd, dimension, path, metric)
             size = os.fstat(fd).st_size
             record_size = _RECORD_HEAD.size + dimension * 4 + _CHECKSUM.size
             offset = _HEADER.size
@@ -125,6 +130,9 @@ class _FlatIndex:
                 vector.ndim != 1 or vector.shape[0] != self._dimension or
                 not vector.flags.c_contiguous):
             raise ValueError("Vector dimension or dtype does not match the index")
+        if self._metric == Metric.COSINE and (not np.all(np.isfinite(vector)) or
+                                              not np.any(vector)):
+            raise ValueError("Cosine vectors must be finite and nonzero")
 
     def _append(self, operation, tag, vector):
         body = _RECORD_HEAD.pack(operation, tag) + vector.tobytes()
@@ -157,7 +165,13 @@ class _FlatIndex:
                 return np.empty(0, dtype=np.uint32), np.empty(0, dtype=np.float32)
             tags = np.fromiter(self._vectors, dtype=np.uint32)
             vectors = np.stack(tuple(self._vectors.values()))
-        distances = np.sum((vectors - query) ** 2, axis=1)
+        if self._metric == Metric.COSINE:
+            vectors = vectors.astype(np.float64)
+            query = query.astype(np.float64)
+            distances = 1 - (vectors @ query) / (np.linalg.norm(vectors, axis=1) *
+                                                np.linalg.norm(query))
+        else:
+            distances = np.sum((vectors - query) ** 2, axis=1)
         nearest = np.argsort(distances, kind="stable")[:k]
         return tags[nearest], distances[nearest].astype(np.float32)
 
@@ -198,7 +212,8 @@ class _FlatIndex:
                 os.unlink(temporary)
 
     def _write_live_records(self, fd):
-        _write_all(fd, _HEADER.pack(_MAGIC, self._dimension))
+        _write_all(fd, _HEADER.pack(_COSINE_MAGIC if self._metric == Metric.COSINE else _MAGIC,
+                                    self._dimension))
         for tag, vector in self._vectors.items():
             body = _RECORD_HEAD.pack(1, tag) + vector.tobytes()
             _write_all(fd, body + _CHECKSUM.pack(zlib.crc32(body)))
@@ -246,31 +261,32 @@ class _FlatIndex:
 
 
 class Index:
-    def __init__(self, backend, threads=4):
+    def __init__(self, backend, threads=4, metric=Metric.L2):
         self._backend = backend
         self._threads = threads
+        self._metric = metric
 
     @classmethod
     def create(cls, prefix, vectors, tags, metric=Metric.L2, threads=4):
-        if not threads or metric != Metric.L2:
-            raise ValueError("Only L2 and positive threads are supported")
+        if not threads or metric not in (Metric.L2, Metric.COSINE):
+            raise ValueError("Only L2, cosine and positive threads are supported")
         if isinstance(vectors, np.ndarray) and vectors.ndim == 2 and vectors.shape[0] == 0:
             if (vectors.dtype != np.float32 or vectors.shape[1] == 0 or
                     not isinstance(tags, np.ndarray) or tags.dtype != np.uint32 or
                     tags.shape != (0,)):
                 raise ValueError("Expected empty float32 vectors and uint32 tags")
-            return cls(_FlatIndex.create(prefix, vectors.shape[1]), threads)
+            return cls(_FlatIndex.create(prefix, vectors.shape[1], metric), threads, metric)
         if os.path.exists(prefix + "_ccann.flat") or os.path.exists(prefix + "_ccann.active"):
             raise ValueError("Index already exists at prefix")
-        return cls(_NativeIndex.create(prefix, vectors, tags, metric, threads), threads)
+        return cls(_NativeIndex.create(prefix, vectors, tags, metric, threads), threads, metric)
 
     @classmethod
     def load(cls, prefix, metric=Metric.L2, threads=4):
         if os.path.exists(prefix + "_ccann.flat"):
-            if not threads or metric != Metric.L2:
-                raise ValueError("Only L2 and positive threads are supported")
-            return cls(_FlatIndex.load(prefix), threads)
-        return cls(_NativeIndex.load(prefix, metric, threads), threads)
+            if not threads or metric not in (Metric.L2, Metric.COSINE):
+                raise ValueError("Only L2, cosine and positive threads are supported")
+            return cls(_FlatIndex.load(prefix, metric), threads, metric)
+        return cls(_NativeIndex.load(prefix, metric, threads), threads, metric)
 
     def __getattr__(self, name):
         return getattr(self._backend, name)
@@ -280,7 +296,7 @@ class Index:
             self._backend.merge()
             return self
         self._backend.merge_to(output_prefix)
-        return self.load(output_prefix, threads=self._threads)
+        return self.load(output_prefix, metric=self._metric, threads=self._threads)
 
 
 __all__ = ["Index", "Metric"]

@@ -607,7 +607,7 @@ namespace ccann {
       return loc_sector_no(loc);
     }
 
-    static constexpr uint32_t kMaxElemInAPage = 16;
+    static constexpr uint32_t kMaxElemInAPage = 32;
     using PageArr = std::array<uint32_t, kMaxElemInAPage>;
     libcuckoo::cuckoohash_map<uint32_t, PageArr> page_layout;  // page_id (start from loc_sector_no(0)) -> ids
 

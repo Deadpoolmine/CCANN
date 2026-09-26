@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <cmath>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -11,6 +12,7 @@
 #include <unordered_set>
 #include <stdexcept>
 #include <system_error>
+#include <vector>
 #include <cerrno>
 #include <climits>
 #include <fcntl.h>
@@ -30,6 +32,22 @@
 namespace py = pybind11;
 
 namespace {
+std::vector<float> normalize_cosine_vector(const float *data, size_t dim) {
+  double norm_squared = 0;
+  for (size_t i = 0; i < dim; ++i) {
+    if (!std::isfinite(data[i]))
+      throw py::value_error("Cosine vectors must be finite and nonzero");
+    norm_squared += static_cast<double>(data[i]) * data[i];
+  }
+  if (!(norm_squared > 0) || !std::isfinite(norm_squared))
+    throw py::value_error("Cosine vectors must be finite and nonzero");
+  double inverse_norm = 1.0 / std::sqrt(norm_squared);
+  std::vector<float> normalized(dim);
+  for (size_t i = 0; i < dim; ++i)
+    normalized[i] = static_cast<float>(data[i] * inverse_norm);
+  return normalized;
+}
+
 #ifdef _WIN32
 int open_file(const std::string &path, int flags, int mode = 0) {
   return ::_open(path.c_str(), flags | _O_BINARY, mode);
@@ -77,8 +95,8 @@ class PySSDIndex {
     if (vectors.ndim() != 2 || tags.ndim() != 1 || vectors.shape(0) != tags.shape(0) ||
         vectors.shape(0) < 256 || vectors.shape(1) == 0 || threads == 0)
       throw py::value_error("Expected at least 256 float32 vectors, matching uint32 tags, and positive threads");
-    if (metric != ccann::Metric::L2)
-      throw py::value_error("Only L2 is supported by the SSD Python index");
+    if (metric != ccann::Metric::L2 && metric != ccann::Metric::COSINE)
+      throw py::value_error("Only L2 and cosine are supported by the SSD Python index");
     std::set<uint32_t> unique_tags(tags.data(), tags.data() + tags.shape(0));
     if (unique_tags.size() != static_cast<size_t>(tags.shape(0)))
       throw py::value_error("Tags must be unique");
@@ -88,7 +106,16 @@ class PySSDIndex {
       throw py::value_error("Index already exists at prefix");
     std::string data_path = prefix + "_ccann_data.bin";
     std::string tags_path = prefix + "_ccann_tags.bin";
-    ccann::save_bin<float>(data_path, vectors.mutable_data(), vectors.shape(0), vectors.shape(1));
+    std::vector<float> normalized;
+    if (metric == ccann::Metric::COSINE) {
+      normalized.reserve(static_cast<size_t>(vectors.shape(0)) * vectors.shape(1));
+      for (py::ssize_t row = 0; row < vectors.shape(0); ++row) {
+        auto unit = normalize_cosine_vector(vectors.data() + row * vectors.shape(1), vectors.shape(1));
+        normalized.insert(normalized.end(), unit.begin(), unit.end());
+      }
+    }
+    ccann::save_bin<float>(data_path, normalized.empty() ? vectors.mutable_data() : normalized.data(),
+                           vectors.shape(0), vectors.shape(1));
     ccann::save_bin<uint32_t>(tags_path, tags.mutable_data(), tags.shape(0), 1);
     auto chunks = std::min<int>(32, vectors.shape(1));
     bool built;
@@ -125,8 +152,8 @@ class PySSDIndex {
     std::string prefix = generation_prefix(root, generation);
     if (threads == 0)
       throw py::value_error("threads must be positive");
-    if (metric != ccann::Metric::L2)
-      throw py::value_error("Only L2 is supported by the SSD Python index");
+    if (metric != ccann::Metric::L2 && metric != ccann::Metric::COSINE)
+      throw py::value_error("Only L2 and cosine are supported by the SSD Python index");
     uint32_t dim;
     int stored_metric;
     std::ifstream meta(prefix + "_ccann.meta");
@@ -178,10 +205,18 @@ class PySSDIndex {
 
   void add(Vectors vector, uint32_t tag) {
     validate_vector(vector);
+    std::vector<float> normalized;
+    const float *data = vector.data();
+    if (metric_ == ccann::Metric::COSINE) {
+      normalized = normalize_cosine_vector(data, dim_);
+      data = normalized.data();
+    }
     std::lock_guard<std::mutex> lock(mu_);
     if (!known_tags_.insert(tag).second)
       throw py::value_error("Tag already exists");
-    index_->insert(vector.data(), tag);
+    index_->insert(data, tag);
+    index_->_disk_index->synchronize_insertions();
+    index_->_disk_index->flush_commits();
     compact_if_needed();
   }
 
@@ -192,12 +227,21 @@ class PySSDIndex {
     py::array_t<uint32_t> ids(k);
     py::array_t<float> distances(k);
     const auto *query_data = query.data();
+    std::vector<float> normalized;
+    if (metric_ == ccann::Metric::COSINE) {
+      normalized = normalize_cosine_vector(query_data, dim_);
+      query_data = normalized.data();
+    }
     auto *ids_data = ids.mutable_data();
     auto *distances_data = distances.mutable_data();
     {
       py::gil_scoped_release release;
       std::lock_guard<std::mutex> lock(mu_);
       index_->search(query_data, k, 0, search_l, 4, ids_data, distances_data, nullptr);
+    }
+    if (metric_ == ccann::Metric::COSINE) {
+      for (uint32_t i = 0; i < k; ++i)
+        distances_data[i] *= 0.5f;
     }
     return py::make_tuple(ids, distances);
   }
@@ -483,10 +527,7 @@ class PySSDIndex {
     params.Set<unsigned>("beamwidth", 4);
     params.Set<unsigned>("nodes_to_cache", 0);
     params.Set<unsigned>("num_threads", threads_);
-    if (metric_ == ccann::Metric::L2)
-      distance_ = std::make_unique<ccann::DistanceL2>();
-    else
-      distance_ = std::make_unique<ccann::DistanceCosineFloat>();
+    distance_ = std::make_unique<ccann::DistanceL2>();
     index_ = std::make_unique<ccann::DynamicSSDIndex<float, uint32_t>>(
         params, prefix_, prefix_ + "_merge", distance_.get(), metric_, BEAM_SEARCH, false, true, threads_);
     if (index_->_disk_index->data_dim != dim_)
