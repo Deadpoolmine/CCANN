@@ -168,6 +168,8 @@ int generate_pq_pivots(const std::unique_ptr<T[]> &passed_train_data, size_t num
 
 int generate_pq_pivots(const float *passed_train_data, size_t num_train, unsigned dim, unsigned num_centers,
                        unsigned num_pq_chunks, unsigned max_k_means_reps, std::string pq_pivots_path) {
+  LOG(INFO) << "PQ training start: points=" << num_train << " dim=" << dim
+            << " centers=" << num_centers << " chunks=" << num_pq_chunks;
   if (num_pq_chunks > dim) {
     LOG(ERROR) << " Error: number of chunks more than dimension";
     return -1;
@@ -268,6 +270,7 @@ int generate_pq_pivots(const float *passed_train_data, size_t num_train, unsigne
 
   for (size_t i = 0; i < num_pq_chunks; i++) {
     size_t cur_chunk_size = chunk_offsets[i + 1] - chunk_offsets[i];
+    if (i == 0) LOG(INFO) << "PQ first chunk size=" << cur_chunk_size;
 
     if (cur_chunk_size == 0)
       continue;
@@ -298,11 +301,13 @@ int generate_pq_pivots(const float *passed_train_data, size_t num_train, unsigne
     // cur_chunk_size,
     //                                  cur_pivot_data.get(), num_centers);
     kmeans::selecting_pivots(cur_data.get(), num_train, cur_chunk_size, cur_pivot_data.get(), num_centers);
+    if (i == 0) LOG(INFO) << "PQ first chunk pivots selected";
 
     unsigned k_means_reps = max_k_means_reps;
 
     kmeans::run_lloyds(cur_data.get(), num_train, cur_chunk_size, cur_pivot_data.get(), num_centers, k_means_reps,
                        nullptr, closest_center.get());
+    if (i == 0) LOG(INFO) << "PQ first chunk Lloyds complete";
     end = std::chrono::high_resolution_clock::now();
     kmeans_time += std::chrono::duration<double>(end - start).count();
 
