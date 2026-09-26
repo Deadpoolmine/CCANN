@@ -854,8 +854,12 @@ namespace ccann {
     LOG(INFO) << "Parameters: " << "L: " << L << ", R: " << range
               << ", saturate_graph: " << (_saturate_graph ? "true" : "false") << ", num_threads: " << num_threads
               << ", alpha: " << parameters.Get<float>("alpha");
+#ifdef _WIN32
+    omp_set_num_threads(1);
+#else
     if (num_threads != 0)
       omp_set_num_threads(num_threads);
+#endif
 
     int64_t n_vecs_to_visit = _nd + _num_frozen_pts;
     _ep = _num_frozen_pts > 0 ? _max_points : calculate_entry_point();
