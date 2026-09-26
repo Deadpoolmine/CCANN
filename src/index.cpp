@@ -746,9 +746,6 @@ namespace ccann {
     unsigned range = parameter.Get<unsigned>("R");
     unsigned maxc = parameter.Get<unsigned>("C");
     float alpha = parameter.Get<float>("alpha");
-#ifdef _WIN32
-    if (pool.size() >= 40) std::cerr << "prune sort size=" << pool.size() << " alpha=" << alpha << std::endl;
-#endif
 
     if (pool.size() == 0) {
       crash();
@@ -758,18 +755,12 @@ namespace ccann {
 
     // sort the pool based on distance to query
     std::sort(pool.begin(), pool.end());
-#ifdef _WIN32
-    if (pool.size() >= 40) std::cerr << "prune sort done" << std::endl;
-#endif
 
     std::vector<Neighbor> result;
     result.reserve(range);
     std::vector<float> occlude_factor(pool.size(), 0);
 
     occlude_list(pool, alpha, range, maxc, result, occlude_factor);
-#ifdef _WIN32
-    if (pool.size() >= 40) std::cerr << "prune occlude done" << std::endl;
-#endif
 
     /* Add all the nodes in result into a variable called cut_graph
      * So this contains all the neighbors of id location
@@ -825,12 +816,8 @@ namespace ccann {
       }  // des lock is released by this point
 
       if (prune_needed) {
-#ifdef _WIN32
-        std::cerr << "reverse prune " << n << " -> " << des << " begin size="
-                  << copy_of_neighbors.size() << std::endl;
-#endif
         copy_of_neighbors.push_back(n);
-        tsl::robin_set<unsigned> dummy_visited(0);
+        tsl::robin_set<unsigned> dummy_visited;
         std::vector<Neighbor> dummy_pool(0);
 
         size_t reserveSize = (size_t) (std::ceil(1.05 * SLACK_FACTOR * range));
@@ -845,22 +832,13 @@ namespace ccann {
             dummy_visited.insert(cur_nbr);
           }
         }
-#ifdef _WIN32
-        std::cerr << "reverse prune pool ready size=" << dummy_pool.size() << std::endl;
-#endif
         std::vector<unsigned> new_out_neighbors;
         prune_neighbors(des, dummy_pool, parameter, new_out_neighbors);
-#ifdef _WIN32
-        std::cerr << "reverse prune " << n << " -> " << des << " neighbors done" << std::endl;
-#endif
         {
           // v2::SparseWriteLockGuard<uint64_t> guard(&_locks, des);
           v2::LockGuard guard(_locks->wrlock(des));
           _final_graph[des].assign(new_out_neighbors.begin(), new_out_neighbors.end());
         }
-#ifdef _WIN32
-        std::cerr << "reverse prune " << n << " -> " << des << " graph done" << std::endl;
-#endif
       }
     }
   }
@@ -926,7 +904,7 @@ namespace ccann {
     for (_s64 node_ctr = 0; node_ctr < n_vecs_to_visit; node_ctr++) {
       auto node = node_ctr;
       if (_final_graph[node].size() > range) {
-        tsl::robin_set<unsigned> dummy_visited(0);
+        tsl::robin_set<unsigned> dummy_visited;
         std::vector<Neighbor> dummy_pool(0);
         std::vector<unsigned> new_out_neighbors;
 
