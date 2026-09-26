@@ -33,7 +33,7 @@ inline int ftruncate(int fd, int64_t length) {
   return result == 0 ? 0 : -1;
 }
 inline int truncate(const char *path, int64_t length) {
-  const int fd = open(path, _O_RDWR | _O_BINARY);
+  const int fd = _wopen(std::filesystem::u8path(path).wstring().c_str(), _O_RDWR | _O_BINARY);
   if (fd < 0) return -1;
   const int result = ftruncate(fd, length);
   const int saved_errno = errno;
