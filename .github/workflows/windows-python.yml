@@ -23,6 +23,5 @@ jobs:
         run: |
           Push-Location $env:RUNNER_TEMP
           python -c "import ccannpy, ccannpy._native; assert ccannpy._NativeIndex is ccannpy._native.Index; print(ccannpy._native.__file__)"
-          python -m pytest -vv -s --timeout=120 "$env:GITHUB_WORKSPACE/tests/test_python_portable.py"
-          python -m pytest -vv -s --timeout=120 "$env:GITHUB_WORKSPACE/tests/test_python_ssd.py::test_ssd_python_round_trip"
+          python -m pytest -vv -s --timeout=180 "$env:GITHUB_WORKSPACE/tests/test_python_portable.py" "$env:GITHUB_WORKSPACE/tests/test_python_ssd.py"
           Pop-Location
