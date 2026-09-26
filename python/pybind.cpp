@@ -4,7 +4,6 @@
 #include <fstream>
 #include <algorithm>
 #include <exception>
-#include <cstdio>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -167,22 +166,12 @@ class PySSDIndex {
     ccann::load_bin<uint32_t>(prefix + "_disk.index.tags", persisted_tags, count, loaded_tag_dim);
     result->known_tags_.insert(persisted_tags.begin(), persisted_tags.end());
     auto removed_tags = read_removed(prefix + "_ccann.removed");
-#ifdef _WIN32
-    std::fprintf(stderr, "Replaying %zu deleted tags\n", removed_tags.size());
-    size_t replayed = 0;
-#endif
     for (uint32_t tag : removed_tags) {
       if (!result->known_tags_.count(tag))
         throw py::value_error("Deletion log contains an unknown tag");
       result->removed_.insert(tag);
       result->index_->lazy_delete(tag);
-#ifdef _WIN32
-      if (++replayed % 500 == 0) std::fprintf(stderr, "Replayed %zu deleted tags\n", replayed);
-#endif
     }
-#ifdef _WIN32
-    std::fprintf(stderr, "Deletion replay complete\n");
-#endif
     result->compact_if_needed();
     return result;
   }

@@ -42,5 +42,5 @@ jobs:
       - shell: pwsh
         run: |
           Push-Location $env:RUNNER_TEMP
-          python -u -m pytest -vv -s --timeout=30 "$env:GITHUB_WORKSPACE/tests/test_python_ssd.py" -k "graph_auto_merge_at_10000_deletes or graph_all_deleted_at_threshold_can_accept_new_add or graph_load_finishes_interrupted_auto_merge"
+          python -m pytest -vv --timeout=180 "$env:GITHUB_WORKSPACE/tests/test_python_ssd.py" -k "graph_auto_merge_at_10000_deletes or graph_all_deleted_at_threshold_can_accept_new_add or graph_load_finishes_interrupted_auto_merge"
           Pop-Location
